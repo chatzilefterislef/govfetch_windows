@@ -220,11 +220,14 @@ class MyAADEAutomation(BaseAutomation):
                     # Πριν, η αναμονή έσκαγε στα 15 δευτερόλεπτα και έριχνε όλη
                     # τη λήψη — παρότι το αρχείο είχε ήδη πιαστεί από το δίκτυο.
                     self.log("  ↗ Νέο tab χωρίς σελίδα (λήψη αρχείου) — συνεχίζω")
-                    try:
-                        if not popup_page.is_closed():
-                            await popup_page.close()
-                    except Exception:
-                        pass
+                    # ΜΗΝ το κλείσεις. Το page.close() σε popup που δεν έκανε
+                    # ΠΟΤΕ commit πλοήγηση ΔΕΝ ΕΠΙΣΤΡΕΦΕΙ ΠΟΤΕ — μετρήθηκε με
+                    # απομονωμένη αναπαραγωγή: το await κρεμόταν και στα 10
+                    # δευτερόλεπτα ορίου. Δεν πετάει εξαίρεση, οπότε το try/
+                    # except από κάτω δεν βοηθούσε καθόλου: όλη η λήψη πάγωνε
+                    # σιωπηλά στο Μητρώο και δεν έφτανε ποτέ στην ενημερότητα.
+                    # Χωρίς close() η ροή συνεχίζει κανονικά (επαληθεύτηκε), και
+                    # το άδειο tab το καθαρίζει το cleanup() με τον browser.
             else:
                 # Δεν είναι σφάλμα αν δεν ησυχάσει το δίκτυο: πολλές σελίδες του
                 # portal κρατούν ανοιχτά αιτήματα (χρονόμετρο συνεδρίας κ.λπ.).
@@ -2284,6 +2287,11 @@ class MyAADEAutomation(BaseAutomation):
 
     # ------------------------------------------------------------------
     # Κεντρική
+    # Ανώτατος χρόνος ανά έγγραφο. Γενναιόδωρο επίτηδες: το ΦΠΑ με μηνιαίες
+    # περιόδους κάνει 12 λήψεις και το portal είναι αργό σε ώρες αιχμής. Δεν
+    # είναι όριο επίδοσης — είναι ασφαλιστική δικλείδα για κόλλημα.
+    DOC_TIMEOUT = 600   # δευτερόλεπτα
+
     # ------------------------------------------------------------------
     async def run(self, username: str, password: str, client_name: str,
                   years: List[str], documents: List[str], dl_dir: Path,
@@ -2344,11 +2352,25 @@ class MyAADEAutomation(BaseAutomation):
                         self.reset_pdf_captures()
                         # Το ΦΠΑ επιστρέφει λίστα (μία δήλωση ανά περίοδο),
                         # τα υπόλοιπα ένα όνομα αρχείου.
-                        result = await handlers[doc](client_name, year, dl_dir)
+                        result = await asyncio.wait_for(
+                            handlers[doc](client_name, year, dl_dir),
+                            timeout=self.DOC_TIMEOUT)
                         if isinstance(result, list):
                             downloaded.extend(result)
                         else:
                             downloaded.append(result)
+                    except asyncio.TimeoutError:
+                        # Δίχτυ ασφαλείας. Ένα κόλλημα σε ΕΝΑ έγγραφο δεν πρέπει
+                        # ποτέ να παγώνει όλη τη λήψη: το page.close() σε popup
+                        # λήψης κρεμόταν για πάντα και η διαδικασία σταματούσε
+                        # σιωπηλά στο Μητρώο, χωρίς σφάλμα και χωρίς σύνοψη.
+                        # Η αιτία εκείνη διορθώθηκε — αυτό πιάνει την επόμενη.
+                        label = f"{DOCUMENT_LABELS.get(doc, doc)} {year}"
+                        failed.append(label)
+                        self.log(f"⚠️ {label}: ξεπέρασε τα "
+                                 f"{self.DOC_TIMEOUT // 60} λεπτά και "
+                                 f"εγκαταλείφθηκε — συνεχίζω με το επόμενο",
+                                 "error")
                     except DocumentNotAvailable as e:
                         # Αναμενόμενη απουσία: δεν είναι βλάβη, χωρίς screenshot
                         label = f"{DOCUMENT_LABELS.get(doc, doc)} {year}"
