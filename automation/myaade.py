@@ -1682,10 +1682,14 @@ class MyAADEAutomation(BaseAutomation):
             # τυχόν προηγούμενη επιλογή δεν πρέπει να μείνει τσεκαρισμένη.
             await self._goto(EFKA_ENTRY)
             if not await self._reach_efka_form():
+                # Το κείμενο της οθόνης μπαίνει ΜΕΣΑ στο μήνυμα: τα screenshots
+                # γράφονται με σταθερό όνομα και μπορεί να είναι από παλιότερο
+                # τρέξιμο, οπότε από μόνα τους παραπλανούν.
+                seen = " ".join((await self._body_text()).split())[:200]
                 raise RuntimeError(
                     f"Δεν φορτώθηκε η φόρμα του e-ΕΦΚΑ — μείναμε στο "
-                    f"{self.page.url}. Δες το screenshot για να φανεί ποια "
-                    f"οθόνη μεσολαβεί: {await self._shot('efka_form')}"
+                    f"{self.page.url}\n   Η οθόνη λέει: «{seen}»\n"
+                    f"   Screenshot: {await self._shot('efka_form')}"
                 )
 
             if not await self._check_labeled_box(fragment, "αιτία χορήγησης"):
@@ -1788,11 +1792,26 @@ class MyAADEAutomation(BaseAutomation):
         να ξαναζητήσει κωδικούς. Οι οθόνες περνιούνται σε βρόχο και όχι με
         σταθερή σειρά, γιατί κάποιες εμφανίζονται μόνο την πρώτη φορά.
         """
+        relogin_tries = 0
         for _ in range(6):
             if await self._on_efka_form():
                 return True
 
             body = label_norm(await self._body_text())
+
+            # Φόρμα κωδικών του oauth2.gsis.gr. ΔΕΝ είναι ο ίδιος auth server
+            # με το login.gsis.gr της ΑΑΔΕ, οπότε η συνεδρία ΔΕΝ μεταφέρεται:
+            # μετά το «Συνέχεια στο TAXISNET» ζητά ξανά κωδικούς. Οι ίδιοι
+            # κωδικοί του πελάτη, από τη μνήμη — ποτέ από αρχείο, ποτέ στο log.
+            if await self.page.query_selector(SEL_USER):
+                if relogin_tries or not getattr(self, "_creds", None):
+                    self.log("  ⚠️ Ο ΕΦΚΑ ζητά ξανά κωδικούς και η επανασύνδεση "
+                             "δεν πέτυχε", "error")
+                    return False
+                relogin_tries += 1
+                self.log("  🔑 Ο ΕΦΚΑ ζητά ξανά σύνδεση — επανάληψη κωδικών")
+                await self._submit_gsis_form(*self._creds)
+                continue
 
             if label_norm(self.EFKA_SSO_LABEL) in body:
                 await self._click_any(self.EFKA_SSO_LABEL,
@@ -1829,6 +1848,28 @@ class MyAADEAutomation(BaseAutomation):
             break   # άγνωστη οθόνη — δεν μαντεύουμε κλικ σε ζωντανό portal
 
         return await self._on_efka_form()
+
+    async def _submit_gsis_form(self, username: str, password: str) -> None:
+        """
+        Συμπληρώνει και υποβάλλει τη φόρμα κωδικών του gsis.
+
+        Ίδια λογική με το login(), αλλά χωρίς τους ελέγχους προορισμού: εδώ
+        καταλήγουμε στον ΕΦΚΑ, όχι στην ΑΑΔΕ. Οι κωδικοί ΔΕΝ γράφονται πουθενά.
+        """
+        await self.page.fill(SEL_USER, username)
+        await self.page.fill(SEL_PASS, password)
+        try:
+            sub = await self.page.wait_for_selector(SEL_SUB, timeout=5_000)
+            await sub.click()
+        except PwTimeout:
+            await self.page.evaluate(
+                "() => { const f = document.querySelector('form');"
+                "        if (f) f.submit(); }")
+        try:
+            await self.page.wait_for_load_state("networkidle", timeout=30_000)
+        except Exception:
+            pass
+        await self.page.wait_for_timeout(1_500)
 
     async def _body_text(self) -> str:
         try:
@@ -2686,6 +2727,11 @@ class MyAADEAutomation(BaseAutomation):
         # Ασφαλιστική ενημερότητα: πολλές αιτίες, μία υποβολή ανά αιτία.
         self.insurance_reasons = list(insurance_reasons or [])
         self.insurance_kind = insurance_kind
+        # ΜΟΝΟ ΣΤΗ ΜΝΗΜΗ, για όσο κρατά το τρέξιμο: ο ΕΦΚΑ περνά από ΑΛΛΟΝ
+        # auth server (oauth2.gsis.gr) που ζητά ξανά κωδικούς — δες
+        # _reach_efka_form(). Δεν γράφονται ΠΟΤΕ σε αρχείο ούτε στο log, και
+        # σβήνονται στο τέλος του run().
+        self._creds = (username, password)
         # Το έτος δεν αφορά τις ενημερότητες — μη το διαφημίζεις όταν είναι το
         # μόνο που ζητήθηκε, γιατί μπερδεύει.
         self._years_matter = any(d not in YEAR_INDEPENDENT_DOCS
@@ -2782,6 +2828,7 @@ class MyAADEAutomation(BaseAutomation):
                         except Exception:
                             pass
         finally:
+            self._creds = None      # οι κωδικοί δεν επιβιώνουν του τρεξίματος
             await self.cleanup()
 
         # Σύνοψη: ποια κατέβηκαν, ποια δεν υπήρχαν, ποια χάλασαν. Πριν φαινόταν
