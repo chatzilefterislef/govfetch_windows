@@ -54,6 +54,74 @@ CLEARANCE_REASONS = {
     "kentriki":  "Είσπραξη χρημάτων από φορείς της Κεντρικής Διοίκησης",
 }
 
+# ── Ασφαλιστική ενημερότητα (e-ΕΦΚΑ) ─────────────────────────────────────
+# Άλλο portal, όχι ΑΑΔΕ: μπαίνει όμως με τους ΙΔΙΟΥΣ κωδικούς TaxisNet μέσω του
+# SSO του gsis, γι' αυτό ζει στην ίδια συνεδρία με τα υπόλοιπα.
+EFKA_ENTRY = ("https://apps.e-efka.gov.gr/eClearanceCertTaxis/faces/"
+              "secureUser/insuranceRequestCommonOper.xhtml")
+
+# Οι αιτίες χορήγησης, όπως ακριβώς εμφανίζονται στη σελίδα.
+#   κλειδί -> (πλήρες κείμενο για το UI και τα ονόματα αρχείων,
+#              διακριτό απόσπασμα για την αντιστοίχιση στη σελίδα)
+# ΓΙΑΤΙ ξεχωριστό απόσπασμα: τα κείμενα είναι τεράστια και σπάνε σε γραμμές,
+# οπότε ταίριασμα ολόκληρου κειμένου είναι εύθραυστο. Τα αποσπάσματα είναι
+# επιλεγμένα ώστε να μην ταιριάζουν σε δεύτερη αιτία — πρόσεξε ότι το
+# «Μεταβίβαση μεταχειρισμένων επαγγελματικών αυτοκινήτων» περιέχει και αυτό τη
+# φράση «αυτοκινήτων Δ.Χ.», γι' αυτό το «Μεταβίβαση αυτοκινήτου ΔΧ» ταιριάζει
+# μόνο ολόκληρο.
+INSURANCE_REASONS = {
+    "eispraxi": (
+        "Είσπραξη Εκκαθαρισμένων Απαιτήσεων ποσού άνω των 3.000€ ανά "
+        "εκκαθαρισμένη απαίτηση",
+        "Είσπραξη Εκκαθαρισμένων Απαιτήσεων"),
+    "athlitis": (
+        "Απόκτηση Αθλητή",
+        "Απόκτηση Αθλητή"),
+    "daneio": (
+        "Σύναψη ή ανανέωση συμβάσεων δανείων άνω των 6.000€",
+        "Σύναψη ή ανανέωση συμβάσεων δανείων"),
+    "akinito": (
+        "Μεταβίβαση ακινήτων λόγω πώλησης, γονικής παροχής ή δωρεάς",
+        "Μεταβίβαση ακινήτων λόγω πώλησης"),
+    "empragmato": (
+        "Σύσταση εμπράγματου δικαιώματος επί ακινήτου",
+        "Σύσταση εμπράγματου δικαιώματος"),
+    "autokinito_dx": (
+        "Μεταβίβαση αυτοκινήτου ΔΧ",
+        "Μεταβίβαση αυτοκινήτου ΔΧ"),
+    "epaggelmatika": (
+        "Μεταβίβαση μεταχειρισμένων επαγγελματικών αυτοκινήτων (πλην "
+        "αυτοκινήτων Δ.Χ.), μηχανοκινήτων θαλασσίων σκαφών άνω των πέντε (5) "
+        "μέτρων, ελικοπτέρων, ανεμοπτέρων, αεροσκαφών και επαγγελματικών "
+        "σκαφών αλιείας",
+        "Μεταβίβαση μεταχειρισμένων επαγγελματικών"),
+    "ergoliptis": (
+        "Συμμετοχή εργολήπτη σε δημοπρασία οποιουδήποτε τεχνικού έργου",
+        "Συμμετοχή εργολήπτη σε δημοπρασία"),
+    "diagonismoi": (
+        "Συμμετοχή σε διαγωνισμούς ανάληψης δημοσίων έργων ή προμηθειών του "
+        "Δημοσίου και των ΝΠΔΔ",
+        "Συμμετοχή σε διαγωνισμούς ανάληψης"),
+    "koinopraxia": (
+        "Συμμετοχή ως μέλος σε Κοινοπραξία ή ως εταίρος σε Ο.Ε, Ε.Ε, Ε.Π.Ε.",
+        "Συμμετοχή ως μέλος σε Κοινοπραξία"),
+    "prosymfono": (
+        "Σύνταξη συμβολαιογραφικού προσυμφώνου με τον εργολάβο",
+        "Σύνταξη συμβολαιογραφικού προσυμφώνου"),
+    "nomimi": (
+        "Κάθε νόμιμη χρήση, προβλεπόμενη από ειδικές διατάξεις, πέραν αυτών "
+        "του Ν. 4611/2019",
+        "Κάθε νόμιμη χρήση"),
+}
+
+# Το πεδίο «Είδος Ασφαλ. Ενημερότητας». Δύο ΤΕΛΕΙΩΣ διαφορετικά πράγματα:
+# το 01 εκδίδει αποδεικτικό, το 00 καταχωρεί υπεύθυνη δήλωση εξαίρεσης.
+# Επιλέγεται ρητά από τον χρήστη — δεν μαντεύεται.
+INSURANCE_KINDS = {
+    "01": "01 Αποδεικτικό Ασφαλιστικής Ενημερότητας",
+    "00": "00 Καταχώρηση Υπεύθυνης Δήλωσης Εξαίρεσης",
+}
+
 # Λίστα υποχρεώσεων ανά έντυπο/έτος. ΙΔΙΟ μοτίβο για ΦΠΑ και εισόδημα — αλλάζει
 # μόνο το declarationType (vatF2 / incomeN), οπότε η ροή «υποχρεώσεις →
 # Επεξεργασία Δηλώσεων → Προβολή» είναι κοινή.
@@ -77,12 +145,13 @@ DOCUMENT_LABELS = {
     "fpa":            "ΦΠΑ",
     "mitroo":         "Μητρώο",
     "forologiki":     "Φορολογική Ενημερότητα",
+    "asfalistiki":    "Ασφαλιστική Ενημερότητα",
 }
 
 # Έγγραφα που ΔΕΝ εξαρτώνται από έτος: κατεβαίνουν μία φορά ανά τρέξιμο, όσα
 # έτη κι αν επιλεγούν. Το μητρώο είναι η τρέχουσα εικόνα της επιχείρησης —
 # χωρίς αυτό, επιλογή τριών ετών θα κατέβαζε τρεις φορές το ίδιο έγγραφο.
-YEAR_INDEPENDENT_DOCS = {"mitroo", "forologiki"}
+YEAR_INDEPENDENT_DOCS = {"mitroo", "forologiki", "asfalistiki"}
 
 # debug_dir(): στα Windows δεν υπάρχει /tmp, οπότε τα screenshots διάγνωσης δεν
 # γράφονταν καθόλου (οι κλήσεις είναι σε try/except, άρα σιωπηλά).
@@ -1457,6 +1526,228 @@ class MyAADEAutomation(BaseAutomation):
         self.log(f"✅ {fname}", "success")
         return fname
 
+    # ------------------------------------------------------------------
+    # Ασφαλιστική ενημερότητα  (e-ΕΦΚΑ)
+    # ------------------------------------------------------------------
+    async def _check_labeled_box(self, fragment: str, what: str) -> bool:
+        """
+        Τσεκάρει ΤΟ ΕΝΑ κουτάκι του οποίου η γραμμή περιέχει το `fragment`.
+
+        Δεν χρησιμοποιείται το _check_all_boxes(): εκεί τσεκάρονται όλα, ενώ εδώ
+        ο χρήστης διάλεξε συγκεκριμένες αιτίες και ΜΟΝΟ αυτές επιτρέπεται να
+        πατηθούν — η αίτηση εκδίδεται δεσμευτικά για την αιτία που δηλώνεται.
+
+        Η αντιστοίχιση γίνεται με εγγύτητα, όπως στο _click_near: ανεβαίνουμε
+        τους γονείς και κρατάμε το κουτάκι του ΠΙΟ ΣΤΕΝΟΥ προγόνου που περιέχει
+        το κείμενο. Χωρίς αυτό, σε σελίδα-πίνακα ο πρόγονος είναι ολόκληρη η
+        φόρμα και θα ταίριαζε το πρώτο κουτάκι της σελίδας.
+        """
+        found = await self.page.evaluate(
+            """([css, want]) => {
+                   const norm = s => (s || '').toUpperCase()
+                       .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '')
+                       .replace(/[ABEHIKMNOPTXYZ]/g,
+                                c => 'ΑΒΕΗΙΚΜΝΟΡΤΧΥΖ'['ABEHIKMNOPTXYZ'.indexOf(c)])
+                       .replace(/\\s+/g, ' ').trim();
+                   document.querySelectorAll('[data-gdf-box]')
+                       .forEach(e => e.removeAttribute('data-gdf-box'));
+                   let best = null, bestDepth = 1e9;
+                   for (const el of document.querySelectorAll(css)) {
+                       if (el.disabled) continue;
+                       let depth = 0;
+                       for (let p = el.parentElement; p; p = p.parentElement) {
+                           depth++;
+                           if (norm(p.innerText).includes(want)) {
+                               if (depth < bestDepth) {
+                                   bestDepth = depth; best = el;
+                               }
+                               break;
+                           }
+                       }
+                   }
+                   if (!best) return null;
+                   best.setAttribute('data-gdf-box', '1');
+                   const row = best.closest('tr, li, label, div');
+                   return {depth: bestDepth,
+                           label: norm(row ? row.innerText : '').slice(0, 70)};
+               }""",
+            [self.CHECKBOX_CSS, label_norm(fragment)],
+        )
+        if not found:
+            self.log(f"  ⚠️ Δεν βρέθηκε κουτάκι για «{fragment}»", "error")
+            return False
+
+        box = self.page.locator('[data-gdf-box="1"]')
+        # ΠΡΑΓΜΑΤΙΚΟ κλικ, όχι el.checked = true: η σελίδα είναι JSF και στέλνει
+        # AJAX σε κάθε αλλαγή — χωρίς κλικ το server-side μοντέλο δεν ενημερώνεται
+        # και η υποβολή φεύγει με μηδέν επιλεγμένες αιτίες.
+        await box.scroll_into_view_if_needed(timeout=5_000)
+        await box.click(timeout=5_000)
+        await self.page.wait_for_timeout(400)
+
+        checked = await self.page.evaluate(
+            """() => { const e = document.querySelector('[data-gdf-box="1"]');
+                       if (!e) return null;
+                       const a = e.getAttribute('aria-checked');
+                       return e.checked === true || a === 'true'; }""")
+        if checked:
+            self.log(f"    ✓ {fragment}")
+            return True
+        self.log(f"  ⚠️ Το κουτάκι «{fragment}» δεν έμεινε επιλεγμένο", "error")
+        return False
+
+    async def _select_insurance_kind(self, kind_label: str) -> bool:
+        """Επιλέγει τιμή στο «Είδος Ασφαλ. Ενημερότητας» (κανονικό <select>)."""
+        marked = await self.page.evaluate(
+            """(want) => {
+                   const norm = s => (s || '').toUpperCase()
+                       .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '')
+                       .replace(/\\s+/g, ' ').trim();
+                   document.querySelectorAll('[data-gdf-sel]')
+                       .forEach(e => e.removeAttribute('data-gdf-sel'));
+                   for (const s of document.querySelectorAll('select')) {
+                       for (const o of s.options) {
+                           if (norm(o.textContent) === norm(want)) {
+                               s.setAttribute('data-gdf-sel', '1');
+                               return o.value;
+                           }
+                       }
+                   }
+                   return null;
+               }""",
+            kind_label,
+        )
+        if marked is None:
+            self.log(f"  ⚠️ Δεν βρέθηκε επιλογή «{kind_label}» σε κανένα "
+                     f"dropdown της σελίδας", "error")
+            return False
+        await self.page.locator('[data-gdf-sel="1"]').select_option(
+            value=marked, timeout=5_000)
+        await self.page.wait_for_timeout(400)
+        self.log(f"  ▾ Είδος: {kind_label}")
+        return True
+
+    async def download_asfalistiki(self, client_name: str, year: str,
+                                   dl_dir: Path) -> List[str]:
+        """
+        Αποδεικτικό Ασφαλιστικής Ενημερότητας από τον e-ΕΦΚΑ.
+
+        ΥΠΟΒΑΛΛΕΙ ΑΙΤΗΣΗ — δεν ανακτά υπάρχον έγγραφο. Γι' αυτό οι αιτίες
+        έρχονται ρητά από τη φόρμα και δεν επιλέγεται τίποτα αυτόματα.
+
+        ΜΙΑ ΥΠΟΒΟΛΗ ΑΝΑ ΑΙΤΙΑ: οι οδηγίες της ίδιας της σελίδας λένε «αφού
+        πρώτα επιλέξετε μια μόνο αιτία κάθε φορά». Ο χρήστης μπορεί να διαλέξει
+        πολλές στο UI· εδώ γίνονται διαδοχικές υποβολές, μία για καθεμία, με
+        καθαρή επαναφόρτωση της φόρμας ενδιάμεσα.
+
+        Αν μια αιτία αποτύχει ΜΕΤΑ την υποβολή, ΔΕΝ ξαναϋποβάλλεται: η αίτηση
+        έχει ήδη καταχωρηθεί στον ΕΦΚΑ και επανάληψη θα δημιουργούσε διπλή.
+        """
+        keys = [k for k in (getattr(self, "insurance_reasons", None) or [])
+                if k in INSURANCE_REASONS]
+        if not keys:
+            raise DocumentNotAvailable(
+                "δεν επιλέχθηκε αιτία χορήγησης για την ασφαλιστική "
+                "ενημερότητα — η αίτηση υποβάλλεται δεσμευτικά για "
+                "συγκεκριμένη αιτία, οπότε δεν την επιλέγω αυτόματα"
+            )
+        kind_key = getattr(self, "insurance_kind", "") or "01"
+        kind_label = INSURANCE_KINDS.get(kind_key)
+        if not kind_label:
+            raise DocumentNotAvailable(
+                f"άγνωστο «Είδος Ασφαλ. Ενημερότητας»: {kind_key!r}")
+
+        self.log(f"📄 Ασφαλιστική ενημερότητα — {len(keys)} "
+                 f"{'αιτία' if len(keys) == 1 else 'αιτίες'}, είδος: {kind_label}")
+
+        files: List[str] = []
+        for n, key in enumerate(keys, 1):
+            full_label, fragment = INSURANCE_REASONS[key]
+            self.log(f"  ── Αιτία {n}/{len(keys)}: {full_label[:70]}")
+
+            # Καθαρή φόρμα σε κάθε αιτία: μετά από υποβολή η σελίδα αλλάζει, και
+            # τυχόν προηγούμενη επιλογή δεν πρέπει να μείνει τσεκαρισμένη.
+            await self._goto(EFKA_ENTRY)
+            if not await self._on_efka_form():
+                raise DocumentNotAvailable(
+                    f"δεν φορτώθηκε η φόρμα του e-ΕΦΚΑ στο {self.page.url} — "
+                    f"πιθανόν να μη μεταφέρθηκε η σύνδεση TaxisNet σε αυτή την "
+                    f"υπηρεσία. Screenshot: {await self._shot('efka_form')}"
+                )
+
+            if not await self._check_labeled_box(fragment, "αιτία χορήγησης"):
+                raise DocumentNotAvailable(
+                    f"δεν επιλέχθηκε η αιτία «{full_label[:60]}» στη σελίδα "
+                    f"{self.page.url}. "
+                    f"Screenshot: {await self._shot(f'efka_reason_{key}')}"
+                )
+            if not await self._select_insurance_kind(kind_label):
+                raise DocumentNotAvailable(
+                    f"δεν επιλέχθηκε το είδος «{kind_label}». "
+                    f"Screenshot: {await self._shot(f'efka_kind_{key}')}"
+                )
+
+            pre = await self._shot(f"efka_before_ypovoli_{key}")
+            self.log(f"  📷 Πριν την υποβολή: {pre}", "success")
+
+            # Δύο κουμπιά δίπλα-δίπλα, «Υποβολή» και «Καθαρισμός», και η λέξη
+            # «Υποβολή» υπάρχει και στο κείμενο των οδηγιών πιο κάτω. Διαλέγουμε
+            # με εγγύτητα στο «Είδος Ασφαλ. Ενημερότητας», που είναι το πεδίο
+            # ακριβώς από πάνω τους.
+            #
+            # ΣΗΜΕΙΩΣΗ: το NEVER_CLICK μπλοκάρει την ΥΠΟΒΟΛΗ στα portals της
+            # ΑΑΔΕ και ΣΩΣΤΑ — εκεί θα υπέβαλλε δηλώσεις. Εδώ η υποβολή είναι
+            # ακριβώς ο ζητούμενος σκοπός, και το _click_near δεν περνά από το
+            # NEVER_CLICK, οπότε η γενική προστασία μένει ανέπαφη.
+            self.reset_pdf_captures()
+            if not await self._click_near("Υποβολή", "Είδος Ασφαλ. Ενημερότητας",
+                                          "Υποβολή αίτησης"):
+                raise DocumentNotAvailable(
+                    f"δεν βρέθηκε το κουμπί «Υποβολή» δίπλα στο «Είδος Ασφαλ. "
+                    f"Ενημερότητας» στη σελίδα {self.page.url}. "
+                    f"Screenshot: {await self._shot(f'efka_submit_{key}')}"
+                )
+            self.log("  📨 Η αίτηση υποβλήθηκε")
+            await self.page.wait_for_timeout(2_000)
+
+            fname = self.dated_filename(
+                client_name, f"Ασφαλιστική_Ενημερότητα_{key}")
+            try:
+                await self._pdf(
+                    dl_dir / fname,
+                    "a[href*='.pdf'], a:has-text('PDF'), a:has-text('Εκτύπωση'), "
+                    "button:has-text('Εκτύπωση'), button:has-text('Λήψη'), "
+                    "a:has-text('Λήψη'), a:has-text('Εκτύπωση Αποδεικτικού')",
+                    doc_label=f"asfalistiki_{key}",
+                )
+            except Exception as e:
+                # Η αίτηση ΕΧΕΙ ήδη υποβληθεί — δεν ξαναπροσπαθούμε, θα γινόταν
+                # δεύτερη αίτηση στον ΕΦΚΑ. Το λέμε καθαρά και προχωράμε.
+                self.log(f"  ⚠️ Η αίτηση για «{full_label[:50]}» υποβλήθηκε, "
+                         f"αλλά δεν κατέβηκε το αρχείο: {e}", "error")
+                self.log("     Κατέβασέ το από το ιστορικό αιτήσεων του "
+                         "e-ΕΦΚΑ — ΜΗΝ ξαναϋποβάλεις.", "error")
+                continue
+
+            self.log(f"✅ {fname}", "success")
+            files.append(fname)
+
+        if not files:
+            raise RuntimeError(
+                "Καμία ασφαλιστική ενημερότητα δεν κατέβηκε. Οι αιτήσεις "
+                "μπορεί να έχουν ήδη υποβληθεί — έλεγξε το ιστορικό αιτήσεων "
+                "στον e-ΕΦΚΑ πριν ξαναδοκιμάσεις."
+            )
+        return files
+
+    async def _on_efka_form(self) -> bool:
+        """True αν φορτώθηκε όντως η φόρμα αιτήσεων του e-ΕΦΚΑ."""
+        try:
+            text = label_norm(await self.page.inner_text("body"))
+        except Exception:
+            return False
+        return label_norm("Αιτίες Χορήγησης Ασφαλιστικής Ενημερότητας") in text
+
     async def _click_near(self, label: str, near_text: str, what: str,
                           attempts: int = 12) -> bool:
         """
@@ -2296,12 +2587,17 @@ class MyAADEAutomation(BaseAutomation):
     async def run(self, username: str, password: str, client_name: str,
                   years: List[str], documents: List[str], dl_dir: Path,
                   is_atomiki: bool = True,
-                  clearance_reason: str = "", clearance_afm: str = "") -> List[str]:
+                  clearance_reason: str = "", clearance_afm: str = "",
+                  insurance_reasons: Optional[List[str]] = None,
+                  insurance_kind: str = "01") -> List[str]:
         self.is_atomiki = is_atomiki
         # Λόγος έκδοσης και ΑΦΜ φορέα για τη φορολογική ενημερότητα — έρχονται
         # από τη φόρμα, γιατί το αποδεικτικό δεσμεύεται από τον σκοπό του.
         self.clearance_reason = clearance_reason
         self.clearance_afm = clearance_afm
+        # Ασφαλιστική ενημερότητα: πολλές αιτίες, μία υποβολή ανά αιτία.
+        self.insurance_reasons = list(insurance_reasons or [])
+        self.insurance_kind = insurance_kind
         self.log(f"📆 Έτη: {', '.join(years)}")
         self.log(f"👤 Τύπος: {'Ατομική επιχείρηση' if is_atomiki else 'Νομικό πρόσωπο'}")
         # Ο browser τρέχει από πίσω, εκτός οθόνης. Με GOV_BROWSER=visible
@@ -2320,6 +2616,7 @@ class MyAADEAutomation(BaseAutomation):
             "fpa":            self.download_fpa,
             "mitroo":         self.download_mitroo,
             "forologiki":     self.download_forologiki,
+            "asfalistiki":    self.download_asfalistiki,
         }
 
         downloaded: List[str] = []

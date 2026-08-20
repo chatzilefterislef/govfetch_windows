@@ -45,7 +45,8 @@ sessions: dict[str, dict] = {}
 # στο μηχάνημα του συναδέλφου. Σε macOS/Linux παραμένει /tmp, όπως πριν.
 LOG_FILE = debug_dir() / "gov_doc_fetcher.log"
 
-MYAADE_DOCS = {"e1", "e3", "n", "ekkatharistiko", "fpa", "mitroo", "forologiki"}
+MYAADE_DOCS = {"e1", "e3", "n", "ekkatharistiko", "fpa", "mitroo", "forologiki",
+               "asfalistiki"}
 
 
 class DownloadRequest(BaseModel):
@@ -68,6 +69,11 @@ class DownloadRequest(BaseModel):
     # το αποδεικτικό εκδίδεται δεσμευτικά γι' αυτόν τον σκοπό.
     clearance_reason: str = ""
     clearance_afm: str = ""
+    # Ασφαλιστική ενημερότητα (e-ΕΦΚΑ): ΠΟΛΛΕΣ αιτίες, γιατί το portal δέχεται
+    # μία αιτία ανά υποβολή — γίνεται μία υποβολή για καθεμία.
+    insurance_reasons: List[str] = []
+    # "01" αποδεικτικό ενημερότητας | "00" υπεύθυνη δήλωση εξαίρεσης
+    insurance_kind: str = "01"
 
     def selected_years(self) -> List[str]:
         """Τα έτη προς λήψη, χωρίς διπλότυπα, με σταθερή σειρά (νεότερο πρώτα)."""
@@ -191,6 +197,8 @@ async def _run(session_id: str, req: DownloadRequest):
                 is_atomiki=req.acts_as_self(),
                 clearance_reason=req.clearance_reason,
                 clearance_afm=req.clearance_afm,
+                insurance_reasons=req.insurance_reasons,
+                insurance_kind=req.insurance_kind,
             )
             all_files.extend(files)
 

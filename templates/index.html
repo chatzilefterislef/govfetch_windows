@@ -191,6 +191,37 @@
               </div>
             </div>
 
+            <!-- Ασφαλιστική ενημερότητα (e-ΕΦΚΑ): ΥΠΟΒΑΛΛΕΙ αίτηση, γι' αυτό
+                 είναι προαιρετική και οι αιτίες επιλέγονται ρητά. -->
+            <div class="card-doc p-2 mb-2">
+              <label class="d-flex align-items-center gap-2" style="cursor:pointer;">
+                <input class="form-check-input mt-0" type="checkbox"
+                       id="want-insurance" onchange="updateInsurance()"/>
+                <span style="font-size:.85rem;">Ασφαλιστική Ενημερότητα
+                  <span class="text-muted">(e-ΕΦΚΑ)</span></span>
+              </label>
+              <div id="insurance-opts" class="mt-2 d-none">
+                <label class="form-label mb-1" style="font-size:.8rem;">
+                  Αιτίες χορήγησης <span class="required-star">*</span>
+                  <span class="text-muted">— διάλεξε όσες θέλεις</span>
+                </label>
+                <div id="insurance-reasons"
+                     style="max-height:190px; overflow-y:auto;
+                            border:1px solid #dee2e6; border-radius:.375rem;
+                            padding:.4rem;"></div>
+                <label class="form-label mb-1 mt-2" style="font-size:.8rem;">
+                  Είδος Ασφαλ. Ενημερότητας <span class="required-star">*</span>
+                </label>
+                <select id="insurance-kind" class="form-select form-select-sm"
+                        onchange="updatePreview()"></select>
+                <div class="text-muted mt-1" style="font-size:.72rem;">
+                  Το portal δέχεται <strong>μία αιτία ανά υποβολή</strong>,
+                  οπότε γίνεται ξεχωριστή υποβολή για καθεμία — ένα αποδεικτικό
+                  ανά αιτία.
+                </div>
+              </div>
+            </div>
+
             <div class="mt-3 d-flex align-items-center gap-2">
               <button id="btn-start" class="btn btn-primary flex-grow-1" onclick="startDownload()">
                 <i class="bi bi-play-fill me-1"></i>Έναρξη Λήψης
@@ -282,7 +313,7 @@ function renderEntityTypes() {
     // σημείο όπου ο χρήστης δηλώνει «άλλος πελάτης», οπότε τυχόν χειροκίνητες
     // επιλογές του προηγούμενου δεν πρέπει να κουβαλιούνται.
     el.onclick = () => { entityType = t.id; renderEntityTypes();
-renderClearanceReasons(); resetDocsToDefault(); };
+renderClearanceReasons(); renderInsuranceReasons(); resetDocsToDefault(); };
     box.appendChild(el);
   }
 }
@@ -311,12 +342,67 @@ function wantsClearance() {
   return document.getElementById("want-clearance").checked;
 }
 
+// ─── Ασφαλιστική ενημερότητα (e-ΕΦΚΑ) ───────────────────────────
+// Ίδια κλειδιά με το INSURANCE_REASONS του automation. Τα κείμενα είναι όπως
+// ακριβώς εμφανίζονται στη σελίδα του ΕΦΚΑ.
+const INSURANCE_REASONS = [
+  { id:"eispraxi",      label:"Είσπραξη Εκκαθαρισμένων Απαιτήσεων ποσού άνω των 3.000€ ανά εκκαθαρισμένη απαίτηση" },
+  { id:"athlitis",      label:"Απόκτηση Αθλητή" },
+  { id:"daneio",        label:"Σύναψη ή ανανέωση συμβάσεων δανείων άνω των 6.000€" },
+  { id:"akinito",       label:"Μεταβίβαση ακινήτων λόγω πώλησης, γονικής παροχής ή δωρεάς" },
+  { id:"empragmato",    label:"Σύσταση εμπράγματου δικαιώματος επί ακινήτου" },
+  { id:"autokinito_dx", label:"Μεταβίβαση αυτοκινήτου ΔΧ" },
+  { id:"epaggelmatika", label:"Μεταβίβαση μεταχειρισμένων επαγγελματικών αυτοκινήτων (πλην αυτοκινήτων Δ.Χ.), μηχανοκινήτων θαλασσίων σκαφών άνω των πέντε (5) μέτρων, ελικοπτέρων, ανεμοπτέρων, αεροσκαφών και επαγγελματικών σκαφών αλιείας" },
+  { id:"ergoliptis",    label:"Συμμετοχή εργολήπτη σε δημοπρασία οποιουδήποτε τεχνικού έργου" },
+  { id:"diagonismoi",   label:"Συμμετοχή σε διαγωνισμούς ανάληψης δημοσίων έργων ή προμηθειών του Δημοσίου και των ΝΠΔΔ" },
+  { id:"koinopraxia",   label:"Συμμετοχή ως μέλος σε Κοινοπραξία ή ως εταίρος σε Ο.Ε, Ε.Ε, Ε.Π.Ε." },
+  { id:"prosymfono",    label:"Σύνταξη συμβολαιογραφικού προσυμφώνου με τον εργολάβο" },
+  { id:"nomimi",        label:"Κάθε νόμιμη χρήση, προβλεπόμενη από ειδικές διατάξεις, πέραν αυτών του Ν. 4611/2019" },
+];
+
+const INSURANCE_KINDS = [
+  { id:"01", label:"01 Αποδεικτικό Ασφαλιστικής Ενημερότητας" },
+  { id:"00", label:"00 Καταχώρηση Υπεύθυνης Δήλωσης Εξαίρεσης" },
+];
+
+function renderInsuranceReasons() {
+  const box = document.getElementById("insurance-reasons");
+  box.innerHTML = INSURANCE_REASONS.map(r => `
+    <label class="d-flex align-items-start gap-2 mb-1" style="cursor:pointer;">
+      <input class="form-check-input mt-1 flex-shrink-0" type="checkbox"
+             value="${r.id}" onchange="updatePreview()"/>
+      <span style="font-size:.75rem; line-height:1.3;">${r.label}</span>
+    </label>`).join("");
+
+  const sel = document.getElementById("insurance-kind");
+  sel.innerHTML = INSURANCE_KINDS
+    .map(k => `<option value="${k.id}">${k.label}</option>`).join("");
+}
+
+function updateInsurance() {
+  const on = document.getElementById("want-insurance").checked;
+  document.getElementById("insurance-opts").classList.toggle("d-none", !on);
+  updateDocSelection();
+}
+
+function wantsInsurance() {
+  return document.getElementById("want-insurance").checked;
+}
+
+function selectedInsuranceReasons() {
+  if (!wantsInsurance()) return [];
+  return [...document.querySelectorAll("#insurance-reasons input:checked")]
+    .map(el => el.value);
+}
+
 function currentDocuments() {
   // Σταθερή σειρά: αυτή του ALL_DOCS, όχι η σειρά που τα πάτησε ο χρήστης.
   const docs = ALL_DOCS.map(d => d.id).filter(id => selectedDocs.has(id));
   // Προαιρετικό και ΟΧΙ μέρος του τύπου: εκδίδει νέο επίσημο έγγραφο κάθε
   // φορά, οπότε δεν πρέπει να φεύγει αυτόματα σε κάθε τρέξιμο.
   if (wantsClearance() && !docs.includes("forologiki")) docs.push("forologiki");
+  // Ίδιο σκεπτικό: ΥΠΟΒΑΛΛΕΙ αίτηση στον ΕΦΚΑ, δεν φεύγει αυτόματα.
+  if (wantsInsurance() && !docs.includes("asfalistiki")) docs.push("asfalistiki");
   return docs;
 }
 
@@ -402,6 +488,7 @@ selectedYears.add(String(new Date().getFullYear()));
 renderYears();
 renderEntityTypes();
 renderClearanceReasons();
+renderInsuranceReasons();
 // Προεπιλεγμένα έγγραφα του αρχικού τύπου — ο χρήστης τα αλλάζει με κλικ.
 for (const id of ENTITY_BY_ID[entityType].docs) selectedDocs.add(id);
 
@@ -452,6 +539,9 @@ async function startDownload() {
     ? document.getElementById("clearance-reason").value : "";
   const clearance_afm = wantsClearance()
     ? document.getElementById("clearance-afm").value.trim() : "";
+  const insurance_reasons = selectedInsuranceReasons();
+  const insurance_kind = wantsInsurance()
+    ? document.getElementById("insurance-kind").value : "01";
   // is_atomiki: το φυσικό πρόσωπο, όπως και η ατομική, είναι Ο ΙΔΙΟΣ ο χρήστης
   // — ποτέ άλλη οντότητα. Στέλνεται και για συμβατότητα με παλιό backend.
   const is_atomiki  = entityType !== "nomiko";
@@ -466,6 +556,22 @@ async function startDownload() {
   if (clearance_afm && !/^\d{9}$/.test(clearance_afm)) {
     alert("Ο ΑΦΜ Φορέα πρέπει να έχει 9 ψηφία."); return;
   }
+  if (wantsInsurance() && !insurance_reasons.length) {
+    alert("Διαλέξτε τουλάχιστον μία αιτία για την ασφαλιστική ενημερότητα.");
+    return;
+  }
+  // Η υποβολή καταχωρεί αίτηση στον ΕΦΚΑ και δεν αναιρείται — ρητή επιβεβαίωση,
+  // ιδίως επειδή οι πολλαπλές αιτίες σημαίνουν ΠΟΛΛΕΣ ξεχωριστές αιτήσεις.
+  if (wantsInsurance()) {
+    const n = insurance_reasons.length;
+    const kindLabel = (INSURANCE_KINDS.find(k => k.id === insurance_kind) || {}).label || insurance_kind;
+    if (!confirm(
+      `Θα υποβληθ${n === 1 ? "εί 1 αίτηση" : `ούν ${n} ξεχωριστές αιτήσεις`} ` +
+      `στον e-ΕΦΚΑ (${kindLabel}).\n\n` +
+      `Οι αιτήσεις καταχωρούνται και δεν αναιρούνται. Να συνεχίσω;`)) {
+      return;
+    }
+  }
 
   document.getElementById("btn-start").disabled = true;
   document.getElementById("spinner").classList.remove("d-none");
@@ -477,7 +583,8 @@ async function startDownload() {
     headers:{"Content-Type":"application/json"},
     body: JSON.stringify({username, password, client_name, years, documents,
                           entity_type, is_atomiki,
-                          clearance_reason, clearance_afm}),
+                          clearance_reason, clearance_afm,
+                          insurance_reasons, insurance_kind}),
   });
   // Αν το αίτημα απορριφθεί, ΔΕΝ υπάρχει session_id και χωρίς αυτόν τον έλεγχο
   // ζητιόταν /api/progress/undefined, που απαντούσε «Session not found» —
