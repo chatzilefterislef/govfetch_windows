@@ -137,6 +137,17 @@ SEL_SUB  = (
     "a:has-text('Είσοδος'), a:has-text('Σύνδεση'), button:has-text('Είσοδος')"
 )
 
+# oauth2.gsis.gr — ο auth server από τον οποίο περνά ο ΕΦΚΑ. ΔΕΝ είναι το
+# login.gsis.gr της ΑΑΔΕ και τα πεδία έχουν ΑΛΛΑ ονόματα: είναι Spring Security
+# (`j_username`/`j_password`, POST στο j_spring_security_check). Γι' αυτό οι
+# selectors της ΑΑΔΕ δεν έπιαναν τη φόρμα και η λήψη σταματούσε λέγοντας απλώς
+# «μείναμε στο oauth2.gsis.gr».
+# Το κουμπί είναι <button type="button">, ΟΧΙ submit — το SEL_SUB δεν το βρίσκει.
+SEL_OAUTH_USER = "input[name='j_username'], #j_username"
+SEL_OAUTH_PASS = "input[name='j_password'], #j_password"
+SEL_OAUTH_SUB  = ("#btn-login-submit, button:has-text('Σύνδεση'), "
+                  "input[type='submit'], button[type='submit']")
+
 DOCUMENT_LABELS = {
     "e1":             "Ε1",
     "e3":             "Ε3",
@@ -1803,14 +1814,15 @@ class MyAADEAutomation(BaseAutomation):
             # με το login.gsis.gr της ΑΑΔΕ, οπότε η συνεδρία ΔΕΝ μεταφέρεται:
             # μετά το «Συνέχεια στο TAXISNET» ζητά ξανά κωδικούς. Οι ίδιοι
             # κωδικοί του πελάτη, από τη μνήμη — ποτέ από αρχείο, ποτέ στο log.
-            if await self.page.query_selector(SEL_USER):
+            sels = await self._find_login_form()
+            if sels:
                 if relogin_tries or not getattr(self, "_creds", None):
                     self.log("  ⚠️ Ο ΕΦΚΑ ζητά ξανά κωδικούς και η επανασύνδεση "
                              "δεν πέτυχε", "error")
                     return False
                 relogin_tries += 1
                 self.log("  🔑 Ο ΕΦΚΑ ζητά ξανά σύνδεση — επανάληψη κωδικών")
-                await self._submit_gsis_form(*self._creds)
+                await self._submit_gsis_form(*self._creds, sels=sels)
                 continue
 
             if label_norm(self.EFKA_SSO_LABEL) in body:
@@ -1849,19 +1861,41 @@ class MyAADEAutomation(BaseAutomation):
 
         return await self._on_efka_form()
 
-    async def _submit_gsis_form(self, username: str, password: str) -> None:
+    # Οι φόρμες σύνδεσης που μπορεί να συναντήσουμε, με σειρά ελέγχου.
+    # Δύο ΔΙΑΦΟΡΕΤΙΚΟΙ auth servers, με άλλα ονόματα πεδίων ο καθένας.
+    LOGIN_FORMS = [
+        (SEL_USER, SEL_PASS, SEL_SUB),                     # login.gsis.gr (ΑΑΔΕ)
+        (SEL_OAUTH_USER, SEL_OAUTH_PASS, SEL_OAUTH_SUB),   # oauth2.gsis.gr (ΕΦΚΑ)
+    ]
+
+    async def _find_login_form(self) -> Optional[tuple]:
+        """Ποια φόρμα σύνδεσης υπάρχει στη σελίδα, αν υπάρχει."""
+        for sels in self.LOGIN_FORMS:
+            try:
+                if await self.page.query_selector(sels[0]):
+                    return sels
+            except Exception:
+                continue
+        return None
+
+    async def _submit_gsis_form(self, username: str, password: str,
+                                sels: Optional[tuple] = None) -> None:
         """
-        Συμπληρώνει και υποβάλλει τη φόρμα κωδικών του gsis.
+        Συμπληρώνει και υποβάλλει φόρμα κωδικών του gsis.
 
         Ίδια λογική με το login(), αλλά χωρίς τους ελέγχους προορισμού: εδώ
         καταλήγουμε στον ΕΦΚΑ, όχι στην ΑΑΔΕ. Οι κωδικοί ΔΕΝ γράφονται πουθενά.
         """
-        await self.page.fill(SEL_USER, username)
-        await self.page.fill(SEL_PASS, password)
+        u_sel, p_sel, s_sel = sels or self.LOGIN_FORMS[0]
+        await self.page.fill(u_sel, username)
+        await self.page.fill(p_sel, password)
         try:
-            sub = await self.page.wait_for_selector(SEL_SUB, timeout=5_000)
+            sub = await self.page.wait_for_selector(s_sel, timeout=5_000)
             await sub.click()
         except PwTimeout:
+            # Το κουμπί του oauth2 είναι <button type="button"> και το κλικ
+            # γίνεται με JavaScript· αν δεν βρεθεί, υποβάλλουμε τη φόρμα άμεσα.
+            # Το CSRF token είναι hidden input ΜΕΣΑ στη φόρμα, οπότε πάει μαζί.
             await self.page.evaluate(
                 "() => { const f = document.querySelector('form');"
                 "        if (f) f.submit(); }")

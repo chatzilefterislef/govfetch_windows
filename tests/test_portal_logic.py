@@ -875,6 +875,56 @@ async def test_efka_submit_button(probe: Probe) -> None:
     probe.page = page   # επαναφορά για τα επόμενα tests
 
 
+# Η ΠΡΑΓΜΑΤΙΚΗ φόρμα του oauth2.gsis.gr (Spring Security), από επιθεώρηση της
+# σελίδας. Τα ονόματα είναι j_username/j_password — ΟΧΙ username/password όπως
+# στο login.gsis.gr της ΑΑΔΕ — και το κουμπί είναι type="button", οπότε ούτε
+# αυτό πιάνεται από τους selectors της ΑΑΔΕ.
+OAUTH2_LOGIN_PAGE = """
+<h3>Αυθεντικοποίηση Χρήστη</h3>
+<button id="localeChangeButton" type="submit">English</button>
+<p>Παρακαλώ εισάγετε τους κωδικούς σας στο TaxisNet για να συνδεθείτε.</p>
+<form id="login-form" method="post" action="/oauth2server/j_spring_security_check">
+  Χρήστης: <input type="text" id="j_username" name="j_username">
+  Κωδικός: <input type="password" id="j_password" name="j_password">
+  <button id="btn-login-submit" type="button">Σύνδεση</button>
+  <input type="hidden" name="_csrf" value="τεστ">
+</form>"""
+
+AADE_LOGIN_PAGE = """
+<form method="post">
+  <input type="text" name="username"><input type="password" name="password">
+  <input type="submit" value="Είσοδος">
+</form>"""
+
+
+async def test_login_form_variants(probe: Probe) -> None:
+    from automation.myaade import (SEL_USER, SEL_OAUTH_USER, SEL_OAUTH_PASS,
+                                  SEL_OAUTH_SUB)
+
+    await probe.page.set_content(OAUTH2_LOGIN_PAGE)
+    check(await probe.page.query_selector(SEL_USER) is None,
+          "οι selectors της ΑΑΔΕ ΔΕΝ πιάνουν τη φόρμα του oauth2 "
+          "(αυτό ήταν το bug)")
+    sels = await probe._find_login_form()
+    check(sels is not None and sels[0] == SEL_OAUTH_USER,
+          "η φόρμα του oauth2.gsis.gr αναγνωρίζεται")
+    for sel, what in ((SEL_OAUTH_PASS, "πεδίο κωδικού"),
+                      (SEL_OAUTH_SUB, "κουμπί «Σύνδεση» (type=button)")):
+        check(await probe.page.query_selector(sel) is not None,
+              f"εντοπίζεται το {what} του oauth2")
+
+    # Η φόρμα της ΑΑΔΕ να ΜΗ σπάσει
+    await probe.page.set_content(AADE_LOGIN_PAGE)
+    sels = await probe._find_login_form()
+    check(sels is not None and sels[0] == SEL_USER,
+          "η φόρμα του login.gsis.gr εξακολουθεί να αναγνωρίζεται πρώτη")
+
+    # Σελίδα χωρίς φόρμα: να μη νομίσει ότι βρήκε
+    await probe.page.set_content("<p>Αιτίες Χορήγησης</p>")
+    check(await probe._find_login_form() is None,
+          "σε σελίδα χωρίς φόρμα δεν εφευρίσκεται σύνδεση")
+
+
 async def test_efka_form_detection(probe: Probe) -> None:
     await probe.page.set_content(EFKA_PAGE)
     check(await probe._on_efka_form(),
@@ -948,6 +998,7 @@ async def main() -> None:
         await test_efka_reason_selection(probe)
         await test_efka_kind_dropdown(probe)
         await test_efka_submit_button(probe)
+        await test_login_form_variants(probe)
         await test_efka_form_detection(probe)
         await browser.close()
 
