@@ -59,6 +59,11 @@ CLEARANCE_REASONS = {
 # SSO του gsis, γι' αυτό ζει στην ίδια συνεδρία με τα υπόλοιπα.
 EFKA_ENTRY = ("https://apps.e-efka.gov.gr/eClearanceCertTaxis/faces/"
               "secureUser/insuranceRequestCommonOper.xhtml")
+# Η ΑΡΧΙΚΗ του eAccess. Χρειάζεται ξεχωριστά από το EFKA_ENTRY: ζητώντας
+# απευθείας τη φόρμα, ο ΕΦΚΑ συνδέει με τον ΠΡΟΕΠΙΛΕΓΜΕΝΟ ρόλο (ασφαλισμένος)
+# και απαντά secureError «Δεν έχετε δικαίωμα πρόσβασης». Από την αρχική
+# εμφανίζεται η οθόνη επιλογής ρόλου, όπου διαλέγουμε «Επιχείρηση/Πολίτης».
+EFKA_LOGIN_ENTRY = "https://apps.e-efka.gov.gr/eAccess/login.xhtml"
 
 # Οι αιτίες χορήγησης, όπως ακριβώς εμφανίζονται στη σελίδα.
 #   κλειδί -> (πλήρες κείμενο για το UI και τα ονόματα αρχείων,
@@ -1691,7 +1696,8 @@ class MyAADEAutomation(BaseAutomation):
 
             # Καθαρή φόρμα σε κάθε αιτία: μετά από υποβολή η σελίδα αλλάζει, και
             # τυχόν προηγούμενη επιλογή δεν πρέπει να μείνει τσεκαρισμένη.
-            await self._goto(EFKA_ENTRY)
+            # Η πλοήγηση γίνεται μέσα στο _reach_efka_form(): την πρώτη φορά
+            # πρέπει να περάσει από την αρχική για την επιλογή ρόλου.
             if not await self._reach_efka_form():
                 # Το κείμενο της οθόνης μπαίνει ΜΕΣΑ στο μήνυμα: τα screenshots
                 # γράφονται με σταθερό όνομα και μπορεί να είναι από παλιότερο
@@ -1788,7 +1794,25 @@ class MyAADEAutomation(BaseAutomation):
     EFKA_SSO_LABEL = "Συνέχεια στο TAXISNET"
     EFKA_ROLE_LABEL = "Επιχείρηση/Πολίτης"
     EFKA_ENTER_LABEL = "Είσοδος"
+    EFKA_LOGOUT_LABEL = "Αποσύνδεση"
     EFKA_CONSENT_LABELS = ["Εξουσιοδότηση", "Συμφωνώ", "Αποδοχή"]
+    # Το κείμενο του secureError.xhtml, όταν η σύνδεση έγινε με ρόλο που δεν
+    # έχει πρόσβαση σε αυτή την εφαρμογή.
+    EFKA_NO_ACCESS = "Δεν έχετε δικαίωμα πρόσβασης"
+
+    async def _has_clickable(self, label: str) -> bool:
+        """
+        Υπάρχει ΚΛΙΚΑΡΙΣΙΜΟ με αυτή την ετικέτα;
+
+        ΓΙΑΤΙ ΟΧΙ έλεγχος στο κείμενο της σελίδας: το μήνυμα σφάλματος του
+        ΕΦΚΑ ΠΕΡΙΕΧΕΙ τη φράση «Συνέχεια στο TAXISNET» ως οδηγία προς τον
+        χρήστη. Ο έλεγχος με κείμενο νόμιζε ότι βρίσκεται στη σελίδα σύνδεσης
+        και προσπαθούσε επί έξι γύρους να πατήσει κουμπί που δεν υπήρχε, ενώ το
+        πραγματικό πρόβλημα ήταν εντελώς άλλο.
+        """
+        target = label_norm(label)
+        return any(target in label_norm(t["label"])
+                   for t in await self._tile_choices())
 
     async def _reach_efka_form(self) -> bool:
         """
@@ -1803,12 +1827,20 @@ class MyAADEAutomation(BaseAutomation):
         να ξαναζητήσει κωδικούς. Οι οθόνες περνιούνται σε βρόχο και όχι με
         σταθερή σειρά, γιατί κάποιες εμφανίζονται μόνο την πρώτη φορά.
         """
+        # ΠΡΩΤΗ φορά: από την ΑΡΧΙΚΗ, ώστε να εμφανιστεί η επιλογή ρόλου.
+        # Ζητώντας απευθείας τη φόρμα, ο ΕΦΚΑ συνδέει με τον προεπιλεγμένο ρόλο
+        # (ασφαλισμένος) και απαντά «δεν έχετε δικαίωμα πρόσβασης». Αφού
+        # στηθεί η συνεδρία με τον σωστό ρόλο, το απευθείας URL δουλεύει.
+        if getattr(self, "_efka_logged_in", False):
+            await self._goto(EFKA_ENTRY)
+        else:
+            await self._goto(EFKA_LOGIN_ENTRY)
+
         relogin_tries = 0
-        for _ in range(6):
+        recovery_tries = 0
+        for _ in range(8):
             if await self._on_efka_form():
                 return True
-
-            body = label_norm(await self._body_text())
 
             # Φόρμα κωδικών του oauth2.gsis.gr. ΔΕΝ είναι ο ίδιος auth server
             # με το login.gsis.gr της ΑΑΔΕ, οπότε η συνεδρία ΔΕΝ μεταφέρεται:
@@ -1816,23 +1848,40 @@ class MyAADEAutomation(BaseAutomation):
             # κωδικοί του πελάτη, από τη μνήμη — ποτέ από αρχείο, ποτέ στο log.
             sels = await self._find_login_form()
             if sels:
-                if relogin_tries or not getattr(self, "_creds", None):
+                if relogin_tries >= 2 or not getattr(self, "_creds", None):
                     self.log("  ⚠️ Ο ΕΦΚΑ ζητά ξανά κωδικούς και η επανασύνδεση "
                              "δεν πέτυχε", "error")
                     return False
                 relogin_tries += 1
-                self.log("  🔑 Ο ΕΦΚΑ ζητά ξανά σύνδεση — επανάληψη κωδικών")
+                self.log("  🔑 Ο ΕΦΚΑ ζητά σύνδεση — εισαγωγή κωδικών")
                 await self._submit_gsis_form(*self._creds, sels=sels)
                 continue
 
-            if label_norm(self.EFKA_SSO_LABEL) in body:
+            # «Δεν έχετε δικαίωμα πρόσβασης»: η σύνδεση έγινε με τον
+            # ΠΡΟΕΠΙΛΕΓΜΕΝΟ ρόλο (ασφαλισμένος), που δεν έχει αυτή την
+            # εφαρμογή. Η ίδια η σελίδα λέει τη λύση: αποσύνδεση και είσοδος
+            # από την αρχή, ώστε να εμφανιστεί η επιλογή ρόλου.
+            if self.EFKA_NO_ACCESS in await self._body_text():
+                if recovery_tries:
+                    self.log("  ⚠️ Ο ΕΦΚΑ επιμένει «δεν έχετε δικαίωμα "
+                             "πρόσβασης» και μετά την επιλογή ρόλου", "error")
+                    return False
+                recovery_tries += 1
+                self.log("  ↺ Λάθος ρόλος — αποσύνδεση και είσοδος από την αρχή")
+                await self._click_any(self.EFKA_LOGOUT_LABEL, "αποσύνδεση ΕΦΚΑ",
+                                      attempts=2)
+                await self.page.wait_for_timeout(2_000)
+                await self._goto(EFKA_LOGIN_ENTRY)
+                continue
+
+            if await self._has_clickable(self.EFKA_SSO_LABEL):
                 await self._click_any(self.EFKA_SSO_LABEL,
                                       "σύνδεση ΕΦΚΑ μέσω TaxisNet", attempts=2)
                 await self.page.wait_for_timeout(2_000)
                 continue
 
             # Οθόνη επιλογής ρόλου: πρώτα η καρτέλα, μετά το «Είσοδος».
-            if label_norm(self.EFKA_ROLE_LABEL) in body:
+            if await self._has_clickable(self.EFKA_ROLE_LABEL):
                 if await self._click_any(self.EFKA_ROLE_LABEL,
                                          "καρτέλα Επιχείρηση/Πολίτης",
                                          attempts=2):
@@ -1840,7 +1889,7 @@ class MyAADEAutomation(BaseAutomation):
                     await self.page.wait_for_timeout(1_000)
                 await self._click_any(self.EFKA_ENTER_LABEL, "Είσοδος ΕΦΚΑ",
                                       attempts=2)
-                await self.page.wait_for_timeout(2_000)
+                await self.page.wait_for_timeout(2_500)
                 # Ο ΕΦΚΑ προσγειώνει σε αρχική, όχι στη φόρμα — τη ζητάμε ρητά.
                 if not await self._on_efka_form():
                     await self._goto(EFKA_ENTRY)
@@ -1848,7 +1897,7 @@ class MyAADEAutomation(BaseAutomation):
 
             consented = False
             for label in self.EFKA_CONSENT_LABELS:
-                if label_norm(label) in body and await self._click_any(
+                if await self._has_clickable(label) and await self._click_any(
                         label, "εξουσιοδότηση", attempts=1):
                     self.log(f"  🔓 Εξουσιοδότηση: «{label}»")
                     await self.page.wait_for_timeout(2_000)
@@ -1859,7 +1908,10 @@ class MyAADEAutomation(BaseAutomation):
 
             break   # άγνωστη οθόνη — δεν μαντεύουμε κλικ σε ζωντανό portal
 
-        return await self._on_efka_form()
+        ok = await self._on_efka_form()
+        if ok:
+            self._efka_logged_in = True
+        return ok
 
     # Οι φόρμες σύνδεσης που μπορεί να συναντήσουμε, με σειρά ελέγχου.
     # Δύο ΔΙΑΦΟΡΕΤΙΚΟΙ auth servers, με άλλα ονόματα πεδίων ο καθένας.

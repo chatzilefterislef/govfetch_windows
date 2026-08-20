@@ -925,6 +925,50 @@ async def test_login_form_variants(probe: Probe) -> None:
           "σε σελίδα χωρίς φόρμα δεν εφευρίσκεται σύνδεση")
 
 
+# Το ΠΡΑΓΜΑΤΙΚΟ secureError.xhtml του ΕΦΚΑ: το μήνυμα ΠΕΡΙΕΧΕΙ τη φράση
+# «Συνέχεια στο TAXISNET» ως οδηγία, χωρίς να υπάρχει τέτοιο κουμπί.
+EFKA_NO_ACCESS_PAGE = """
+<h3>Σφάλμα</h3>
+<p>Δεν έχετε δικαίωμα πρόσβασης σε αυτήν την εφαρμογή. Παρακαλούμε επιλέξτε
+  'Αποσύνδεση' και εισέλθετε εκ νέου στις ηλεκτρονικές υπηρεσίες επιλέγοντας
+  'Συνέχεια στο TAXISNET' για υπηρεσίες προς ασφαλισμένους.</p>
+<a href="#">Επιστροφή</a>
+<a href="#">Αποσύνδεση</a>
+<a href="#">Περισσότερες πληροφορίες</a>"""
+
+EFKA_SSO_PAGE = """
+<div>Σύνδεση με κωδικούς TAXISNET</div>
+<button id="sso">Συνέχεια στο TAXISNET</button>"""
+
+
+async def test_efka_error_page_not_mistaken_for_login(probe: Probe) -> None:
+    """
+    Η οθόνη «δεν έχετε δικαίωμα πρόσβασης» ΑΝΑΦΕΡΕΙ το «Συνέχεια στο TAXISNET»
+    μέσα στο κείμενό της. Ο έλεγχος με κείμενο νόμιζε ότι βρίσκεται στη σελίδα
+    σύνδεσης και προσπαθούσε επί έξι γύρους να πατήσει κουμπί που δεν υπάρχει,
+    ενώ το πραγματικό πρόβλημα ήταν ο λάθος ρόλος.
+    """
+    from automation.myaade import MyAADEAutomation as M
+
+    await probe.page.set_content(EFKA_NO_ACCESS_PAGE)
+    body = await probe._body_text()
+    check(M.EFKA_SSO_LABEL in body,
+          "το μήνυμα σφάλματος ΟΝΤΩΣ περιέχει τη φράση (γι' αυτό ξεγελούσε)")
+    check(not await probe._has_clickable(M.EFKA_SSO_LABEL),
+          "ΔΕΝ υπάρχει κλικαρίσιμο «Συνέχεια στο TAXISNET» — δεν το κυνηγάμε")
+    check(M.EFKA_NO_ACCESS in body,
+          "η οθόνη αναγνωρίζεται ως «δεν έχετε δικαίωμα πρόσβασης»")
+    check(await probe._has_clickable(M.EFKA_LOGOUT_LABEL),
+          "υπάρχει «Αποσύνδεση» για την ανάκαμψη")
+
+    # Στην ΠΡΑΓΜΑΤΙΚΗ σελίδα σύνδεσης το κουμπί υπάρχει και εντοπίζεται
+    await probe.page.set_content(EFKA_SSO_PAGE)
+    check(await probe._has_clickable(M.EFKA_SSO_LABEL),
+          "στη σελίδα σύνδεσης το κουμπί εντοπίζεται κανονικά")
+    check(M.EFKA_NO_ACCESS not in await probe._body_text(),
+          "η σελίδα σύνδεσης δεν μπερδεύεται με σφάλμα πρόσβασης")
+
+
 async def test_efka_form_detection(probe: Probe) -> None:
     await probe.page.set_content(EFKA_PAGE)
     check(await probe._on_efka_form(),
@@ -999,6 +1043,7 @@ async def main() -> None:
         await test_efka_kind_dropdown(probe)
         await test_efka_submit_button(probe)
         await test_login_form_variants(probe)
+        await test_efka_error_page_not_mistaken_for_login(probe)
         await test_efka_form_detection(probe)
         await browser.close()
 
