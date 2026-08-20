@@ -61,6 +61,20 @@ def bootstrap() -> None:
     """Φτιάχνει το venv και τα εξαρτήματα, και μετά ξαναμπαίνει μέσα σε αυτό."""
     if sys.version_info < (3, 9):
         sys.exit(f"❌ Χρειάζεται Python 3.9+ (τρέχει {sys.version.split()[0]})")
+    # Άνω όριο, όχι υπερβολή: το Playwright 1.47 καρφώνει greenlet==3.0.3, που
+    # έχει έτοιμα wheels μόνο μέχρι την 3.12. Σε 3.13/3.14 το pip προσπαθεί να
+    # το ΜΕΤΑΓΛΩΤΤΙΣΕΙ και σκάει ζητώντας Visual C++ (Windows) ή Xcode CLT (mac).
+    # Χωρίς αυτόν τον έλεγχο ο χρήστης έβλεπε 119 γραμμές σφάλματος από τον
+    # compiler και καμία ένδειξη ότι το πρόβλημα είναι η έκδοση της Python.
+    if sys.version_info >= (3, 13):
+        sys.exit(
+            f"❌ Η Python {sys.version.split()[0]} είναι πολύ νέα για τις "
+            f"εκδόσεις που χρησιμοποιεί η εφαρμογή.\n"
+            f"   Χρειάζεται Python 3.9 έως 3.12 — δες README.md.\n"
+            f"   Τρέξε το run.py με τη 3.12, π.χ.:\n"
+            f"   Windows: py -3.12 run.py\n"
+            f"   macOS:   python3.12 run.py"
+        )
 
     if not venv_python().exists():
         run([sys.executable, "-m", "venv", str(VENV)], "Δημιουργία virtual environment")
@@ -81,7 +95,17 @@ def bootstrap() -> None:
     # οπότε χωρίς αυτό το flush χάνονταν όλα τα μηνύματα προόδου παραπάνω.
     sys.stdout.flush()
     sys.stderr.flush()
-    os.execv(py, [py, str(Path(__file__).resolve()), *sys.argv[1:]])
+
+    script = str(Path(__file__).resolve())
+    if os.name == "nt":
+        # ΠΑΓΙΔΑ: το os.execv στα Windows ΔΕΝ βάζει quotes στα ορίσματα, οπότε
+        # κάθε διαδρομή με κενό σπάει στο κενό. Με φάκελο «Δουλειά Ficon» ο
+        # interpreter ζητούσε 'Ficon\gov-doc-fetcher\.venv\Scripts\python.exe'
+        # και η εφαρμογή δεν ξεκινούσε καθόλου — και τα «C:\Users\Όνομα
+        # Επώνυμο», «Program Files» και OneDrive έχουν όλα κενά.
+        # Το subprocess περνά τα ορίσματα σωστά quoted.
+        sys.exit(subprocess.run([py, script, *sys.argv[1:]], cwd=ROOT).returncode)
+    os.execv(py, [py, script, *sys.argv[1:]])
 
 
 def serve(port: int, open_browser: bool) -> None:

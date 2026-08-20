@@ -51,13 +51,21 @@ xattr -dr com.apple.quarantine
 
 ## Προϋποθέσεις (για ανάπτυξη)
 
-**Python 3.9 ή νεότερη.** Τίποτα άλλο — ο Chromium κατεβαίνει αυτόματα την
+**Python 3.9 έως 3.12.** Τίποτα άλλο — ο Chromium κατεβαίνει αυτόματα την
 πρώτη φορά (~150 MB).
 
-- **macOS**: υπάρχει ήδη. Έλεγχος: `python3 --version`
-- **Windows**: κατέβασέ την από [python.org](https://www.python.org/downloads/)
-  και στην εγκατάσταση τσέκαρε **«Add python.exe to PATH»**.
-  Έλεγχος: `python --version`
+Η 3.13 και νεότερη **δεν δουλεύει**: το Playwright 1.47 καρφώνει
+`greenlet==3.0.3`, που έχει έτοιμα wheels μέχρι την 3.12, οπότε το pip
+προσπαθεί να το μεταγλωττίσει και ζητά Visual C++ Build Tools (Windows) ή Xcode
+Command Line Tools (macOS). Το `run.py` το ελέγχει και σου το λέει καθαρά.
+Προσοχή: το python.org προσφέρει σήμερα την 3.14 ως προεπιλογή — διάλεξε ρητά
+την 3.12 από τη λίστα εκδόσεων.
+
+- **macOS**: `python3.12 --version`. Αν λείπει: `brew install python@3.12` ή από
+  το [python.org](https://www.python.org/downloads/)
+- **Windows**: κατέβασε την **3.12** από
+  [python.org](https://www.python.org/downloads/) και στην εγκατάσταση τσέκαρε
+  **«Add python.exe to PATH»**. Έλεγχος: `py -3.12 --version`
 
 ## Εγκατάσταση και εκκίνηση
 
@@ -72,14 +80,17 @@ cd gov-doc-fetcher
 **macOS / Linux**
 
 ```bash
-python3 run.py
+python3.12 run.py
 ```
 
 **Windows**
 
 ```bash
-python run.py
+py -3.12 run.py
 ```
+
+Αν η 3.12 είναι η μόνη Python στο μηχάνημα, αρκεί `python3 run.py` και
+`python run.py` αντίστοιχα.
 
 Η πρώτη εκτέλεση παίρνει ένα-δύο λεπτά (κατεβαίνει ο Chromium). Οι επόμενες
 είναι άμεσες. Η εφαρμογή ανοίγει στο <http://localhost:8000>.
