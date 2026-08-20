@@ -332,11 +332,17 @@ async def test_certificate_tile(probe: Probe) -> None:
     await probe.page.set_content(CERTIFICATE_TILES)
     async def fake_click(el):        # χωρίς πραγματική πλοήγηση στο τεστ
         return None
+    # ΠΑΝΤΑ με επαναφορά: όσο έμενε μόνιμα το fake_click, ΚΑΘΕ επόμενο test
+    # «πατούσε» χωρίς να πατάει τίποτα στην πραγματικότητα — τα tests περνούσαν
+    # ελέγχοντας μόνο ποιο στοιχείο σημαδεύτηκε, ποτέ αν το κλικ έφτασε.
+    real_click = probe._click_and_follow
     probe._click_and_follow = fake_click
-
-    ok = await probe._click_tile(
-        "Τρέχουσα Εικόνα Οντότητας/Επιχείρησης", "τεστ",
-        avoid=["ΦΥΣΙΚΟΥ ΠΡΟΣΩΠΟΥ", "ΙΣΤΟΡΙΚΟ"], attempts=1)
+    try:
+        ok = await probe._click_tile(
+            "Τρέχουσα Εικόνα Οντότητας/Επιχείρησης", "τεστ",
+            avoid=["ΦΥΣΙΚΟΥ ΠΡΟΣΩΠΟΥ", "ΙΣΤΟΡΙΚΟ"], attempts=1)
+    finally:
+        probe._click_and_follow = real_click
     check(ok, "εντοπίζεται το «Τρέχουσα Εικόνα Οντότητας/Επιχείρησης»")
 
     picked = [m for m in probe.logs if "πλακίδιο" in m]
@@ -380,15 +386,20 @@ async def test_tiles_are_divs(probe: Probe) -> None:
 
     async def fake_click(el):
         return None
+    real_click = probe._click_and_follow
     probe._click_and_follow = fake_click
-    probe.logs.clear()
-    ok = await probe._click_tile("Βεβαιώσεις Μητρώου", "τεστ", attempts=1)
-    check(ok, "το πλακίδιο <div> πατιέται κανονικά")
+    try:
+        probe.logs.clear()
+        ok = await probe._click_tile("Βεβαιώσεις Μητρώου", "τεστ", attempts=1)
+        check(ok, "το πλακίδιο <div> πατιέται κανονικά")
 
-    probe.logs.clear()
-    blocked_ok = not await probe._click_tile("Αλλαγή Κωδικού TAXISnet", "τεστ",
-                                             attempts=1)
-    check(blocked_ok, "το «Αλλαγή Κωδικού TAXISnet» παραμένει αποκλεισμένο")
+        probe.logs.clear()
+        blocked_ok = not await probe._click_tile("Αλλαγή Κωδικού TAXISnet",
+                                                 "τεστ", attempts=1)
+        check(blocked_ok,
+              "το «Αλλαγή Κωδικού TAXISnet» παραμένει αποκλεισμένο")
+    finally:
+        probe._click_and_follow = real_click
 
 
 async def test_check_all_boxes(probe: Probe) -> None:
@@ -585,10 +596,13 @@ async def test_click_near_with_latin_letters(probe: Probe) -> None:
 
     async def fake_click(el):
         return None
+    real_click = probe._click_and_follow
     probe._click_and_follow = fake_click
-
-    ok = await probe._click_near("Είσοδος", "Έκδοση Αποδεικτικού", "τεστ",
-                                 attempts=1)
+    try:
+        ok = await probe._click_near("Είσοδος", "Έκδοση Αποδεικτικού", "τεστ",
+                                     attempts=1)
+    finally:
+        probe._click_and_follow = real_click
     check(ok, "βρίσκεται το «Είσοδος» παρά τα λατινικά γράμματα στον οδηγό")
     if ok:
         which = await probe.page.evaluate(
@@ -623,9 +637,12 @@ async def test_pdf_button_behind_modal(probe: Probe) -> None:
     clicked = {}
     async def fake_click(el):
         clicked["id"] = await el.evaluate("e => e.id")
+    real_click = probe._click_and_follow
     probe._click_and_follow = fake_click
-
-    ok = await probe._click_any("Ψηφιακό αρχείο", "τεστ", attempts=1)
+    try:
+        ok = await probe._click_any("Ψηφιακό αρχείο", "τεστ", attempts=1)
+    finally:
+        probe._click_and_follow = real_click
     check(ok, "βρίσκεται το κουμπί παρότι το κείμενο σπάει σε δύο γραμμές")
     check(clicked.get("id") == "inmodal",
           "πατιέται αυτό ΜΕΣΑ στο modal, όχι το καλυμμένο της σελίδας",
@@ -724,6 +741,153 @@ def test_registry_filename() -> None:
     check(name.endswith("_Μητρώο.pdf"), "σωστή κατάληξη", name)
 
 
+# ── Ασφαλιστική ενημερότητα (e-ΕΦΚΑ) ───────────────────────────────────────
+
+# Αναπαράγει τη σελίδα insuranceRequestCommonOper.xhtml: 12 αιτίες σε γραμμές
+# πίνακα, dropdown «Είδος Ασφαλ. Ενημερότητας», και ΔΥΟ κουμπιά δίπλα-δίπλα.
+# Οι παγίδες που πρέπει να αποφευχθούν είναι όλες εδώ:
+#   • «Μεταβίβαση αυτοκινήτου ΔΧ» vs «…(πλην αυτοκινήτων Δ.Χ.)» στην ίδια σελίδα
+#   • «Καθαρισμός» ακριβώς δίπλα στο «Υποβολή»
+#   • η λέξη «Υποβολή» και μέσα στις οδηγίες, ως ΔΕΥΤΕΡΟ κουμπί πιο κάτω
+EFKA_REASONS = [
+    "Είσπραξη Εκκαθαρισμένων Απαιτήσεων ποσού άνω των 3.000€ ανά εκκαθαρισμένη απαίτηση",
+    "Απόκτηση Αθλητή",
+    "Σύναψη ή ανανέωση συμβάσεων δανείων άνω των 6.000€",
+    "Μεταβίβαση ακινήτων λόγω πώλησης, γονικής παροχής ή δωρεάς",
+    "Σύσταση εμπράγματου δικαιώματος επί ακινήτου",
+    "Μεταβίβαση αυτοκινήτου ΔΧ",
+    "Μεταβίβαση μεταχειρισμένων επαγγελματικών αυτοκινήτων (πλην αυτοκινήτων "
+    "Δ.Χ.), μηχανοκινήτων θαλασσίων σκαφών άνω των πέντε (5) μέτρων, "
+    "ελικοπτέρων, ανεμοπτέρων, αεροσκαφών και επαγγελματικών σκαφών αλιείας",
+    "Συμμετοχή εργολήπτη σε δημοπρασία οποιουδήποτε τεχνικού έργου",
+    "Συμμετοχή σε διαγωνισμούς ανάληψης δημοσίων έργων ή προμηθειών του "
+    "Δημοσίου και των ΝΠΔΔ",
+    "Συμμετοχή ως μέλος σε Κοινοπραξία ή ως εταίρος σε Ο.Ε, Ε.Ε, Ε.Π.Ε.",
+    "Σύνταξη συμβολαιογραφικού προσυμφώνου με τον εργολάβο",
+    "Κάθε νόμιμη χρήση, προβλεπόμενη από ειδικές διατάξεις, πέραν αυτών του "
+    "Ν. 4611/2019",
+]
+
+EFKA_ROWS = "".join(
+    f'<tr><td><input type="checkbox" id="cb{i}"></td>'
+    f'<td>{t}:*</td></tr>' for i, t in enumerate(EFKA_REASONS))
+
+EFKA_PAGE = f"""
+<div>Στοιχεία Αιτούντος</div>
+<div>Αιτίες Χορήγησης Ασφαλιστικής Ενημερότητας</div>
+<table>{EFKA_ROWS}</table>
+<table><tr><td>Είδος Ασφαλ. Ενημερότητας:*</td>
+  <td><select id="kind">
+    <option value="">-</option>
+    <option value="00">00 Καταχώρηση Υπεύθυνης Δήλωσης Εξαίρεσης</option>
+    <option value="01">01 Αποδεικτικό Ασφαλιστικής Ενημερότητας</option>
+  </select></td></tr></table>
+<div>
+  <input type="button" id="submit-real" value="Υποβολή"
+         onclick="window.__hit='submit-real'">
+  <input type="button" id="clear" value="Καθαρισμός"
+         onclick="window.__hit='clear'">
+</div>
+<div>Οδηγίες Οθόνης
+  <ul><li>επιλέγοντας Υποβολή, να καταχωρήσετε αίτηση για λήψη ασφαλιστικής
+      ενημερότητας, αφού πρώτα επιλέξετε μια μόνο αιτία κάθε φορά.</li></ul>
+  <input type="button" id="submit-decoy" value="Υποβολή"
+         onclick="window.__hit='submit-decoy'">
+</div>"""
+
+
+async def _efka_checked(probe: Probe) -> list[int]:
+    return await probe.page.evaluate(
+        "() => [...document.querySelectorAll('input[type=checkbox]')]"
+        "        .map((e,i) => e.checked ? i : -1).filter(i => i >= 0)")
+
+
+async def test_efka_reason_selection(probe: Probe) -> None:
+    from automation.myaade import INSURANCE_REASONS
+
+    check(len(INSURANCE_REASONS) == len(EFKA_REASONS),
+          "όλες οι αιτίες της σελίδας υπάρχουν στο INSURANCE_REASONS",
+          f"{len(INSURANCE_REASONS)} / {len(EFKA_REASONS)}")
+
+    # Κάθε απόσπασμα πρέπει να ταιριάζει σε ΑΚΡΙΒΩΣ μία αιτία — αλλιώς θα
+    # υποβαλλόταν αίτηση για λάθος λόγο.
+    for key, (full, frag) in INSURANCE_REASONS.items():
+        hits = [t for t in EFKA_REASONS if label_norm(frag) in label_norm(t)]
+        check(len(hits) == 1,
+              f"το απόσπασμα του «{key}» ταιριάζει σε ακριβώς μία αιτία",
+              f"{len(hits)} ταιριάσματα")
+
+    # Η επικίνδυνη περίπτωση: «Μεταβίβαση αυτοκινήτου ΔΧ» ενώ υπάρχει και το
+    # «…(πλην αυτοκινήτων Δ.Χ.)» παρακάτω.
+    await probe.page.set_content(EFKA_PAGE)
+    ok = await probe._check_labeled_box(
+        INSURANCE_REASONS["autokinito_dx"][1], "αιτία")
+    check(ok, "τσεκάρεται η αιτία «Μεταβίβαση αυτοκινήτου ΔΧ»")
+    check(await _efka_checked(probe) == [5],
+          "επιλέχθηκε ΜΟΝΟ η σωστή γραμμή, όχι τα επαγγελματικά αυτοκίνητα",
+          str(await _efka_checked(probe)))
+
+    # Και μία με πολύ μεγάλο κείμενο που σπάει σε γραμμές
+    await probe.page.set_content(EFKA_PAGE)
+    await probe._check_labeled_box(INSURANCE_REASONS["nomimi"][1], "αιτία")
+    check(await _efka_checked(probe) == [11],
+          "τσεκάρεται η «Κάθε νόμιμη χρήση» παρά το μεγάλο κείμενο",
+          str(await _efka_checked(probe)))
+
+
+async def test_efka_kind_dropdown(probe: Probe) -> None:
+    from automation.myaade import INSURANCE_KINDS
+
+    await probe.page.set_content(EFKA_PAGE)
+    ok = await probe._select_insurance_kind(INSURANCE_KINDS["01"])
+    val = await probe.page.eval_on_selector("#kind", "e => e.value")
+    check(ok and val == "01", "επιλέγεται το «01 Αποδεικτικό»", f"value={val}")
+
+    ok = await probe._select_insurance_kind(INSURANCE_KINDS["00"])
+    val = await probe.page.eval_on_selector("#kind", "e => e.value")
+    check(ok and val == "00",
+          "επιλέγεται και η υπεύθυνη δήλωση εξαίρεσης όταν ζητηθεί",
+          f"value={val}")
+
+
+async def test_efka_submit_button(probe: Probe) -> None:
+    # Κρατάμε ΤΗ ΣΕΛΙΔΑ ΠΟΥ ΠΑΤΑΜΕ: το _click_and_follow μεταθέτει το
+    # probe.page όταν ανοίξει νέο tab (στο portal το αποδεικτικό ανοίγει έτσι),
+    # οπότε διαβάζοντας από το probe.page μετά το κλικ βλέπαμε άλλη σελίδα.
+    page = probe.page
+    await page.set_content(EFKA_PAGE)
+    # Listener αντί για inline onclick: το κλικ πρέπει να καταγραφεί ό,τι κι αν
+    # ισχύει για inline handlers στο περιβάλλον που τρέχουν τα tests.
+    await page.evaluate(
+        """() => {
+               window.__hit = null;
+               for (const b of document.querySelectorAll('input[type=button]'))
+                   b.addEventListener('click', () => { window.__hit = b.id; });
+           }""")
+
+    ok = await probe._click_near("Υποβολή", "Είδος Ασφαλ. Ενημερότητας",
+                                 "Υποβολή αίτησης")
+    check(ok, "εντοπίζεται το κουμπί «Υποβολή» δίπλα στο «Είδος Ασφαλ.»")
+    hit = await page.evaluate("() => window.__hit")
+    check(hit == "submit-real",
+          "πατιέται η «Υποβολή» ΤΗΣ ΦΟΡΜΑΣ, όχι το «Καθαρισμός» ούτε το "
+          "κουμπί των οδηγιών", f"πάτησε: {hit}")
+    probe.page = page   # επαναφορά για τα επόμενα tests
+
+
+async def test_efka_form_detection(probe: Probe) -> None:
+    await probe.page.set_content(EFKA_PAGE)
+    check(await probe._on_efka_form(),
+          "η φόρμα του e-ΕΦΚΑ αναγνωρίζεται")
+
+    # Σελίδα σύνδεσης: πρέπει να ΜΗΝ περνά για φόρμα, αλλιώς θα «υπέβαλλε»
+    # σε λάθος σελίδα και το σφάλμα θα ήταν ακατανόητο.
+    await probe.page.set_content(
+        "<h1>Είσοδος</h1><input name='username'><input name='password'>")
+    check(not await probe._on_efka_form(),
+          "η σελίδα σύνδεσης ΔΕΝ περνά για φόρμα του ΕΦΚΑ")
+
+
 async def main() -> None:
     test_greek_text()
     test_filenames()
@@ -754,16 +918,33 @@ async def main() -> None:
         await test_download_popup_does_not_hang(probe)
         await test_click_near_with_latin_letters(probe)
         await test_pdf_button_behind_modal(probe)
+        await test_efka_reason_selection(probe)
+        await test_efka_kind_dropdown(probe)
+        await test_efka_submit_button(probe)
+        await test_efka_form_detection(probe)
         await browser.close()
 
+
+def report() -> int:
     print()
     if FAILURES:
         print(f"❌ {len(FAILURES)} αποτυχίες:")
         for f in FAILURES:
             print(f"   • {f}")
-        sys.exit(1)
+        return 1
     print("✅ Όλοι οι έλεγχοι πέρασαν")
+    return 0
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Το κλείσιμο του Playwright μπαίνει σε ΔΙΚΟ του try: ο Node driver του
+    # 1.47 σκάει στο τερματισμό με «TargetClosedError» όταν έχει μείνει tab που
+    # δεν έκανε ποτέ commit πλοήγηση (τα popup λήψης). Είναι ΜΟΝΟ στο κλείσιμο
+    # και δεν αφορά κανέναν έλεγχο — αλλά χωρίς αυτό το suite έβγαζε exit code
+    # 1 με μηδέν αποτυχίες, δηλαδή κόκκινο CI χωρίς κανένα πρόβλημα.
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        print(f"\n⚠️ Σφάλμα στο κλείσιμο του Playwright (αγνοείται): "
+              f"{type(e).__name__}")
+    sys.exit(report())
