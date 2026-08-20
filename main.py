@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import uuid
+from datetime import date
 from pathlib import Path
 from typing import List
 
@@ -14,7 +15,7 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
 from automation.base import debug_dir
-from automation.myaade import MyAADEAutomation
+from automation.myaade import MyAADEAutomation, YEAR_INDEPENDENT_DOCS
 
 app = FastAPI(title="Gov Document Fetcher")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -164,23 +165,37 @@ async def _run(session_id: str, req: DownloadRequest):
             pass  # το logging δεν πρέπει ποτέ να ρίξει το τρέξιμο
 
     years = req.selected_years()
+    requested = [d for d in req.documents if d in MYAADE_DOCS]
+    # Οι ενημερότητες εκδίδονται για τη ΔΕΔΟΜΕΝΗ ΣΤΙΓΜΗ — δεν υπάρχει
+    # «ενημερότητα του 2023». Όταν ζητούνται μόνο αυτές, το έτος δεν έχει
+    # κανένα νόημα και δεν απαιτείται· μπαίνει το τρέχον απλώς για να τρέξει
+    # μία φορά ο βρόχος, και δεν εμφανίζεται πουθενά (δες _doc_label).
+    if not years and requested and all(d in YEAR_INDEPENDENT_DOCS
+                                       for d in requested):
+        years = [str(date.today().year)]
     if not years:
         s["status"] = "error"
         log("❌ Δεν επιλέχθηκε κανένα έτος.", "error")
         return
 
+    # Όταν ζητούνται μόνο ενημερότητες, το έτος είναι εσωτερική λεπτομέρεια και
+    # δεν πρέπει να εμφανίζεται — αλλιώς μοιάζει να αφορά εκείνη τη χρήση.
+    years_label = (", ".join(years) if any(d not in YEAR_INDEPENDENT_DOCS
+                                           for d in requested)
+                   else "δεν αφορά (ενημερότητες)")
+
     try:
         # Καθαρό αρχείο ανά τρέξιμο, για να μη μπερδεύονται παλιά σφάλματα
         try:
             LOG_FILE.write_text(
-                f"=== {req.client_name} | Έτη: {', '.join(years)} | "
+                f"=== {req.client_name} | Έτη: {years_label} | "
                 f"{req.entity_label()} | "
                 f"έγγραφα: {req.documents} ===\n",
                 encoding="utf-8",
             )
         except Exception:
             pass
-        log(f"🚀 Πελάτης: {req.client_name} | Έτη: {', '.join(years)}")
+        log(f"🚀 Πελάτης: {req.client_name} | Έτη: {years_label}")
 
         myaade_docs = [d for d in req.documents if d in MYAADE_DOCS]
         all_files: List[str] = []

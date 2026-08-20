@@ -342,6 +342,11 @@ function wantsClearance() {
   return document.getElementById("want-clearance").checked;
 }
 
+// Έγγραφα που ΔΕΝ αφορούν έτος — ίδιο με το YEAR_INDEPENDENT_DOCS του
+// automation. Οι ενημερότητες εκδίδονται για τη δεδομένη στιγμή και το μητρώο
+// είναι η τρέχουσα εικόνα· καμία από αυτές δεν γίνεται για παρελθόν.
+const YEAR_FREE_DOCS = ["mitroo", "forologiki", "asfalistiki"];
+
 // ─── Ασφαλιστική ενημερότητα (e-ΕΦΚΑ) ───────────────────────────
 // Ίδια κλειδιά με το INSURANCE_REASONS του automation. Τα κείμενα είναι όπως
 // ακριβώς εμφανίζονται στη σελίδα του ΕΦΚΑ.
@@ -507,23 +512,46 @@ function updatePreview() {
   const years = currentYears();
   const docs = currentDocuments();
   const p = document.getElementById("fname-preview");
-  if (!docs.length || !years.length) {
+  // Χωρίζουμε: όσα εξαρτώνται από έτος πολλαπλασιάζονται επί τις χρονολογίες,
+  // οι ενημερότητες και το μητρώο κατεβαίνουν ΜΙΑ φορά ό,τι κι αν επιλεγεί.
+  const yearDocs = docs.filter(d => !YEAR_FREE_DOCS.includes(d));
+  const freeDocs = docs.filter(d =>  YEAR_FREE_DOCS.includes(d));
+
+  if (!docs.length || (yearDocs.length && !years.length)) {
     const missing = [];
-    if (!years.length) missing.push("μία χρονολογία");
+    if (yearDocs.length && !years.length) missing.push("μία χρονολογία");
     if (!docs.length)  missing.push("ένα έγγραφο");
     p.innerHTML = `<i class="bi bi-exclamation-circle me-1 text-danger"></i>`
                 + `Διάλεξε τουλάχιστον ${missing.join(" και ")}.`;
     return;
   }
-  const year = years[0];
-  // Το όνομα φέρει το ΦΟΡΟΛΟΓΙΚΟ έτος (= έτος υποβολής - 1) — δες safe_filename()
-  const fiscalYear = Number(year) - 1;
-  const lbl = DOCS_BY_ID[docs[0]].label.split("–")[0].trim();
-  const total = years.length * docs.length;
-  p.innerHTML = `<i class="bi bi-info-circle me-1"></i>Π.χ.: <code>${fiscalYear}_${name}_${lbl}.pdf</code>`
-              + `<br><i class="bi bi-calendar-check me-1"></i>Δηλώσεις έτους ${year} → φορολογικό έτος ${fiscalYear}`
-              + `<br><i class="bi bi-collection me-1"></i>${years.length} ${years.length===1?"χρονολογία":"χρονολογίες"}`
-              + ` × ${docs.length} έγγραφα = <strong>${total}</strong> λήψεις (${years.join(", ")})`;
+
+  // Η ασφαλιστική βγάζει ΕΝΑ αποδεικτικό ανά αιτία — το portal δέχεται μία
+  // αιτία ανά υποβολή.
+  const insCount = Math.max(selectedInsuranceReasons().length, 0);
+  const total = years.length * yearDocs.length
+              + freeDocs.filter(d => d !== "asfalistiki").length
+              + insCount;
+
+  const lines = [];
+  if (yearDocs.length) {
+    const year = years[0];
+    // Το όνομα φέρει το ΦΟΡΟΛΟΓΙΚΟ έτος (= έτος υποβολής - 1) — δες safe_filename()
+    const fiscalYear = Number(year) - 1;
+    const lbl = DOCS_BY_ID[yearDocs[0]].label.split("–")[0].trim();
+    lines.push(`<i class="bi bi-info-circle me-1"></i>Π.χ.: <code>${fiscalYear}_${name}_${lbl}.pdf</code>`);
+    lines.push(`<i class="bi bi-calendar-check me-1"></i>Δηλώσεις έτους ${year} → φορολογικό έτος ${fiscalYear}`);
+    lines.push(`<i class="bi bi-collection me-1"></i>${years.length} ${years.length===1?"χρονολογία":"χρονολογίες"}`
+             + ` × ${yearDocs.length} έγγραφα`
+             + (freeDocs.length ? " + ενημερότητες/μητρώο" : "")
+             + ` = <strong>${total}</strong> λήψεις (${years.join(", ")})`);
+  } else {
+    const today = new Date().toISOString().slice(0, 10);
+    lines.push(`<i class="bi bi-info-circle me-1"></i>Π.χ.: <code>${today}_${name}_Ασφαλιστική_Ενημερότητα.pdf</code>`);
+    lines.push(`<i class="bi bi-calendar-check me-1"></i>Χωρίς έτος — εκδίδονται για τη σημερινή ημερομηνία`);
+    lines.push(`<i class="bi bi-collection me-1"></i><strong>${total}</strong> ${total===1?"λήψη":"λήψεις"}`);
+  }
+  p.innerHTML = lines.join("<br>");
 }
 document.getElementById("client_name").addEventListener("input", updatePreview);
 
@@ -548,8 +576,12 @@ async function startDownload() {
 
   if (!username || !password) { alert("Εισάγετε κωδικούς TaxisNet."); return; }
   if (!client_name) { alert("Εισάγετε ονοματεπώνυμο πελάτη."); return; }
-  if (!years.length) { alert("Διαλέξτε τουλάχιστον μία χρονολογία."); return; }
   if (!documents.length) { alert("Διαλέξτε τουλάχιστον ένα έγγραφο."); return; }
+  // Οι ενημερότητες εκδίδονται για τη ΔΕΔΟΜΕΝΗ ΣΤΙΓΜΗ — δεν υπάρχει
+  // «ενημερότητα του 2023», οπότε δεν απαιτούν χρονολογία.
+  if (!years.length && documents.some(d => !YEAR_FREE_DOCS.includes(d))) {
+    alert("Διαλέξτε τουλάχιστον μία χρονολογία."); return;
+  }
   if (wantsClearance() && !clearance_reason) {
     alert("Διαλέξτε λόγο έκδοσης για τη φορολογική ενημερότητα."); return;
   }

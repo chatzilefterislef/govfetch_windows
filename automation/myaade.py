@@ -158,6 +158,19 @@ YEAR_INDEPENDENT_DOCS = {"mitroo", "forologiki", "asfalistiki"}
 DEBUG_SHOT = debug_dir() / "gov_debug.png"
 
 
+def _doc_label(doc: str, year: str) -> str:
+    """
+    Ετικέτα εγγράφου για τα μηνύματα και τη σύνοψη.
+
+    Οι ενημερότητες (φορολογική, ασφαλιστική) ΔΕΝ φέρουν έτος: εκδίδονται για
+    τη ΔΕΔΟΜΕΝΗ ΣΤΙΓΜΗ και δεν υπάρχει «ενημερότητα του 2023». Το «Ασφαλιστική
+    Ενημερότητα 2025» στη σύνοψη ήταν παραπλανητικό — έμοιαζε να αφορά χρήση
+    του 2025, ενώ το έτος ήταν απλώς αυτό που έτυχε να είναι επιλεγμένο.
+    """
+    name = DOCUMENT_LABELS.get(doc, doc)
+    return name if doc in YEAR_INDEPENDENT_DOCS else f"{name} {year}"
+
+
 class DocumentNotAvailable(Exception):
     """
     Το έγγραφο δεν ΥΠΑΡΧΕΙ για αυτόν τον φορολογούμενο/έτος — δεν είναι σφάλμα.
@@ -1668,11 +1681,11 @@ class MyAADEAutomation(BaseAutomation):
             # Καθαρή φόρμα σε κάθε αιτία: μετά από υποβολή η σελίδα αλλάζει, και
             # τυχόν προηγούμενη επιλογή δεν πρέπει να μείνει τσεκαρισμένη.
             await self._goto(EFKA_ENTRY)
-            if not await self._on_efka_form():
-                raise DocumentNotAvailable(
-                    f"δεν φορτώθηκε η φόρμα του e-ΕΦΚΑ στο {self.page.url} — "
-                    f"πιθανόν να μη μεταφέρθηκε η σύνδεση TaxisNet σε αυτή την "
-                    f"υπηρεσία. Screenshot: {await self._shot('efka_form')}"
+            if not await self._reach_efka_form():
+                raise RuntimeError(
+                    f"Δεν φορτώθηκε η φόρμα του e-ΕΦΚΑ — μείναμε στο "
+                    f"{self.page.url}. Δες το screenshot για να φανεί ποια "
+                    f"οθόνη μεσολαβεί: {await self._shot('efka_form')}"
                 )
 
             if not await self._check_labeled_box(fragment, "αιτία χορήγησης"):
@@ -1747,6 +1760,81 @@ class MyAADEAutomation(BaseAutomation):
         except Exception:
             return False
         return label_norm("Αιτίες Χορήγησης Ασφαλιστικής Ενημερότητας") in text
+
+    # Οι ενδιάμεσες οθόνες μέχρι τη φόρμα, με τη σειρά που εμφανίζονται:
+    #   1. eAccess/login.xhtml            → «Συνέχεια στο TAXISNET»
+    #   2. (προαιρετικά) εξουσιοδότηση gsis
+    #   3. «Σύνδεση Χρήστη TAXISNET»      → καρτέλα «Επιχείρηση/Πολίτης», «Είσοδος»
+    #
+    # ΠΡΟΣΟΧΗ στο βήμα 3: η ΠΡΟΕΠΙΛΕΓΜΕΝΗ καρτέλα είναι «Ασφαλισμένος» και ζητά
+    # ΑΜΚΑ, που δεν έχουμε και δεν αφορά επιχείρηση. Η σωστή καρτέλα φαίνεται
+    # αχνή/ανενεργή, αλλά πατιέται κανονικά. Στην ίδια οθόνη υπάρχει και
+    # «Αποσύνδεση» — γι' αυτό τα labels είναι ΑΚΡΙΒΗ, ποτέ γενικά.
+    EFKA_SSO_LABEL = "Συνέχεια στο TAXISNET"
+    EFKA_ROLE_LABEL = "Επιχείρηση/Πολίτης"
+    EFKA_ENTER_LABEL = "Είσοδος"
+    EFKA_CONSENT_LABELS = ["Εξουσιοδότηση", "Συμφωνώ", "Αποδοχή"]
+
+    async def _reach_efka_form(self) -> bool:
+        """
+        Φτάνει στη φόρμα αιτήσεων του e-ΕΦΚΑ, περνώντας τη δική του σύνδεση.
+
+        ΓΙΑΤΙ ΔΕΝ ΑΡΚΕΙ ΤΟ LOGIN ΤΗΣ ΑΑΔΕ: ο ΕΦΚΑ είναι ΑΛΛΗ υπηρεσία. Σκέτη
+        πλοήγηση στο insuranceRequestCommonOper.xhtml κατέληγε στο
+        apps.e-efka.gov.gr/eAccess/login.xhtml και η λήψη ανέφερε «δεν
+        φορτώθηκε η φόρμα», που εμφανιζόταν ως «δεν υπήρχε το έγγραφο».
+
+        Η ταυτότητα υπάρχει ήδη από το login(): το SSO του gsis την περνά χωρίς
+        να ξαναζητήσει κωδικούς. Οι οθόνες περνιούνται σε βρόχο και όχι με
+        σταθερή σειρά, γιατί κάποιες εμφανίζονται μόνο την πρώτη φορά.
+        """
+        for _ in range(6):
+            if await self._on_efka_form():
+                return True
+
+            body = label_norm(await self._body_text())
+
+            if label_norm(self.EFKA_SSO_LABEL) in body:
+                await self._click_any(self.EFKA_SSO_LABEL,
+                                      "σύνδεση ΕΦΚΑ μέσω TaxisNet", attempts=2)
+                await self.page.wait_for_timeout(2_000)
+                continue
+
+            # Οθόνη επιλογής ρόλου: πρώτα η καρτέλα, μετά το «Είσοδος».
+            if label_norm(self.EFKA_ROLE_LABEL) in body:
+                if await self._click_any(self.EFKA_ROLE_LABEL,
+                                         "καρτέλα Επιχείρηση/Πολίτης",
+                                         attempts=2):
+                    self.log("  👤 Καρτέλα «Επιχείρηση/Πολίτης»")
+                    await self.page.wait_for_timeout(1_000)
+                await self._click_any(self.EFKA_ENTER_LABEL, "Είσοδος ΕΦΚΑ",
+                                      attempts=2)
+                await self.page.wait_for_timeout(2_000)
+                # Ο ΕΦΚΑ προσγειώνει σε αρχική, όχι στη φόρμα — τη ζητάμε ρητά.
+                if not await self._on_efka_form():
+                    await self._goto(EFKA_ENTRY)
+                continue
+
+            consented = False
+            for label in self.EFKA_CONSENT_LABELS:
+                if label_norm(label) in body and await self._click_any(
+                        label, "εξουσιοδότηση", attempts=1):
+                    self.log(f"  🔓 Εξουσιοδότηση: «{label}»")
+                    await self.page.wait_for_timeout(2_000)
+                    consented = True
+                    break
+            if consented:
+                continue
+
+            break   # άγνωστη οθόνη — δεν μαντεύουμε κλικ σε ζωντανό portal
+
+        return await self._on_efka_form()
+
+    async def _body_text(self) -> str:
+        try:
+            return await self.page.inner_text("body")
+        except Exception:
+            return ""
 
     async def _click_near(self, label: str, near_text: str, what: str,
                           attempts: int = 12) -> bool:
@@ -2598,7 +2686,12 @@ class MyAADEAutomation(BaseAutomation):
         # Ασφαλιστική ενημερότητα: πολλές αιτίες, μία υποβολή ανά αιτία.
         self.insurance_reasons = list(insurance_reasons or [])
         self.insurance_kind = insurance_kind
-        self.log(f"📆 Έτη: {', '.join(years)}")
+        # Το έτος δεν αφορά τις ενημερότητες — μη το διαφημίζεις όταν είναι το
+        # μόνο που ζητήθηκε, γιατί μπερδεύει.
+        self._years_matter = any(d not in YEAR_INDEPENDENT_DOCS
+                                 for d in documents)
+        if self._years_matter:
+            self.log(f"📆 Έτη: {', '.join(years)}")
         self.log(f"👤 Τύπος: {'Ατομική επιχείρηση' if is_atomiki else 'Νομικό πρόσωπο'}")
         # Ο browser τρέχει από πίσω, εκτός οθόνης. Με GOV_BROWSER=visible
         # εμφανίζεται κανονικά — χρήσιμο όταν κάτι χαλάει και θέλουμε να δούμε
@@ -2633,7 +2726,8 @@ class MyAADEAutomation(BaseAutomation):
             # ταλαιπωρεί το portal με επαναλαμβανόμενες συνδέσεις.
             done_once: set = set()   # έγγραφα χωρίς έτος, ήδη κατεβασμένα
             for year in years:
-                self.log(f"══ Έτος {year} ══")
+                if self._years_matter:
+                    self.log(f"══ Έτος {year} ══")
                 for doc in documents:
                     if doc not in handlers:
                         continue
@@ -2662,7 +2756,7 @@ class MyAADEAutomation(BaseAutomation):
                         # λήψης κρεμόταν για πάντα και η διαδικασία σταματούσε
                         # σιωπηλά στο Μητρώο, χωρίς σφάλμα και χωρίς σύνοψη.
                         # Η αιτία εκείνη διορθώθηκε — αυτό πιάνει την επόμενη.
-                        label = f"{DOCUMENT_LABELS.get(doc, doc)} {year}"
+                        label = _doc_label(doc, year)
                         failed.append(label)
                         self.log(f"⚠️ {label}: ξεπέρασε τα "
                                  f"{self.DOC_TIMEOUT // 60} λεπτά και "
@@ -2670,11 +2764,11 @@ class MyAADEAutomation(BaseAutomation):
                                  "error")
                     except DocumentNotAvailable as e:
                         # Αναμενόμενη απουσία: δεν είναι βλάβη, χωρίς screenshot
-                        label = f"{DOCUMENT_LABELS.get(doc, doc)} {year}"
+                        label = _doc_label(doc, year)
                         missing.append(label)
                         self.log(f"ℹ️ {label}: {e}")
                     except Exception as e:
-                        label = f"{DOCUMENT_LABELS.get(doc, doc)} {year}"
+                        label = _doc_label(doc, year)
                         failed.append(label)
                         self.log(f"⚠️ {label}: {e}", "error")
                         # Ξεχωριστό screenshot ανά έγγραφο ΚΑΙ έτος — αλλιώς το

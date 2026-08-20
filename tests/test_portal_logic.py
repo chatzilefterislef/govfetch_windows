@@ -888,9 +888,36 @@ async def test_efka_form_detection(probe: Probe) -> None:
           "η σελίδα σύνδεσης ΔΕΝ περνά για φόρμα του ΕΦΚΑ")
 
 
+def test_clearances_have_no_year() -> None:
+    """
+    Οι ενημερότητες εκδίδονται για τη ΔΕΔΟΜΕΝΗ ΣΤΙΓΜΗ — δεν υπάρχει
+    «ενημερότητα του 2023». Δεν πρέπει ούτε να φέρουν έτος στα μηνύματα, ούτε
+    να κατεβαίνουν ξανά για κάθε επιλεγμένο έτος.
+    """
+    from automation.myaade import _doc_label, YEAR_INDEPENDENT_DOCS
+
+    for doc in ("forologiki", "asfalistiki", "mitroo"):
+        label = _doc_label(doc, "2025")
+        check("2025" not in label,
+              f"το «{doc}» δεν φέρει έτος στην ετικέτα", label)
+        check(doc in YEAR_INDEPENDENT_DOCS,
+              f"το «{doc}» κατεβαίνει μία φορά ανά τρέξιμο, όχι ανά έτος")
+
+    check(_doc_label("e1", "2025") == "Ε1 2025",
+          "τα έγγραφα που ΟΝΤΩΣ αφορούν έτος το κρατούν",
+          _doc_label("e1", "2025"))
+
+    # Το όνομα αρχείου φέρει ημερομηνία, όχι έτος
+    from datetime import date
+    fname = MyAADEAutomation.dated_filename("ΠΕΛΑΤΗΣ", "Ασφαλιστική_Ενημερότητα")
+    check(fname.startswith(date.today().isoformat()),
+          "το αρχείο της ασφαλιστικής φέρει ΗΜΕΡΟΜΗΝΙΑ", fname)
+
+
 async def main() -> None:
     test_greek_text()
     test_filenames()
+    test_clearances_have_no_year()
     test_registry_filename()
     test_login_success_check()
     test_merge_pdfs()
