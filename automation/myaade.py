@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+from datetime import date
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from typing import Callable, List, Optional
@@ -64,6 +65,12 @@ EFKA_ENTRY = ("https://apps.e-efka.gov.gr/eClearanceCertTaxis/faces/"
 # και απαντά secureError «Δεν έχετε δικαίωμα πρόσβασης». Από την αρχική
 # εμφανίζεται η οθόνη επιλογής ρόλου, όπου διαλέγουμε «Επιχείρηση/Πολίτης».
 EFKA_LOGIN_ENTRY = "https://apps.e-efka.gov.gr/eAccess/login.xhtml"
+# Η ΡΙΖΑ της εφαρμογής, δηλαδή το μενού της. ΑΠΟ ΕΔΩ ΜΠΑΙΝΟΥΜΕ ΣΤΗ ΦΟΡΜΑ, με
+# κλικ στην επιλογή του μενού — ΟΧΙ με απευθείας URL στο EFKA_ENTRY. Ζητώντας
+# κατευθείαν τη φόρμα, αυτή ανοίγει αλλά ΧΩΡΙΣ τα «Στοιχεία Αιτούντος»: το
+# backing bean της γεμίζει μόνο όταν η πλοήγηση γίνει από το μενού, και η
+# υποβολή απορρίπτεται με «Ο Α.Φ.Μ. είναι υποχρεωτικό πεδίο».
+EFKA_APP_ROOT = "https://apps.e-efka.gov.gr/eAccess/index.xhtml"
 
 # Οι αιτίες χορήγησης, όπως ακριβώς εμφανίζονται στη σελίδα.
 #   κλειδί -> (πλήρες κείμενο για το UI και τα ονόματα αρχείων,
@@ -150,7 +157,10 @@ SEL_SUB  = (
 # Το κουμπί είναι <button type="button">, ΟΧΙ submit — το SEL_SUB δεν το βρίσκει.
 SEL_OAUTH_USER = "input[name='j_username'], #j_username"
 SEL_OAUTH_PASS = "input[name='j_password'], #j_password"
+# Η σελίδα αυτού του auth server εμφανίζεται και ΣΤΑ ΑΓΓΛΙΚΑ («User
+# Authentication … Login»), οπότε μόνο το «Σύνδεση» δεν αρκεί.
 SEL_OAUTH_SUB  = ("#btn-login-submit, button:has-text('Σύνδεση'), "
+                  "button:has-text('Login'), input[value='Login'], "
                   "input[type='submit'], button[type='submit']")
 
 DOCUMENT_LABELS = {
@@ -172,6 +182,13 @@ YEAR_INDEPENDENT_DOCS = {"mitroo", "forologiki", "asfalistiki"}
 # debug_dir(): στα Windows δεν υπάρχει /tmp, οπότε τα screenshots διάγνωσης δεν
 # γράφονταν καθόλου (οι κλήσεις είναι σε try/except, άρα σιωπηλά).
 DEBUG_SHOT = debug_dir() / "gov_debug.png"
+
+# Ο αριθμός αίτησης του e-ΕΦΚΑ, όπως «Φ/2938139/2026». Τον κρατάμε ΓΙΑΤΙ με
+# αυτόν ξεχωρίζει η ΔΙΚΗ ΜΑΣ γραμμή στη λίστα υποβληθεισών αιτήσεων: η λίστα
+# δείχνει όλες τις αιτήσεις των τελευταίων 2 ημερών, οπότε το «Έλεγχος
+# Αποτελέσματος» της πρώτης γραμμής μπορεί να αφορά εντελώς άλλη αίτηση.
+EFKA_REQ_NO_RE = re.compile(r"[ΦF]\s*/\s*\d+\s*/\s*\d{4}")
+
 
 
 def _doc_label(doc: str, year: str) -> str:
@@ -1459,8 +1476,10 @@ class MyAADEAutomation(BaseAutomation):
             """(css) => {
                    document.querySelectorAll('[data-gdf-tile]')
                        .forEach(e => e.removeAttribute('data-gdf-tile'));
-                   const txt = el => ((el.value || el.innerText ||
-                                       el.textContent || '')
+                   // Κανένα value από πεδίο κωδικού: τα tiles καταλήγουν σε
+                   // μηνύματα διάγνωσης και ο κωδικός δεν γράφεται ΠΟΤΕ πουθενά.
+                   const txt = el => (((el.type === 'password' ? '' : el.value)
+                                       || el.innerText || el.textContent || '')
                                       .replace(/\\s+/g, ' ')).trim();
                    const out = [];
                    let k = 0;
@@ -1472,7 +1491,8 @@ class MyAADEAutomation(BaseAutomation):
                        if ([...el.querySelectorAll(css)].some(c => txt(c) === t))
                            continue;
                        el.setAttribute('data-gdf-tile', String(k));
-                       out.push({k, label: t});
+                       out.push({k, label: t,
+                                 is_input: el.matches('input, textarea, select')});
                        k++;
                    }
                    return out;
@@ -1558,6 +1578,40 @@ class MyAADEAutomation(BaseAutomation):
     # ------------------------------------------------------------------
     # Ασφαλιστική ενημερότητα  (e-ΕΦΚΑ)
     # ------------------------------------------------------------------
+    async def _labeled_box_checked(self, fragment: str) -> Optional[bool]:
+        """
+        Είναι τσεκαρισμένο το κουτάκι της γραμμής `fragment`; ΧΩΡΙΣ να το πατά.
+
+        Ξεχωριστό από το _check_labeled_box(), που ΠΑΤΑΕΙ: ξαναπατώντας ένα ήδη
+        τσεκαρισμένο κουτάκι θα το ΞΕΤΣΕΚΑΡΕΙ. Επιστρέφει None αν το κουτάκι
+        δεν βρίσκεται καθόλου.
+        """
+        return await self.page.evaluate(
+            """([css, want]) => {
+                       const norm = s => (s || '').toUpperCase()
+                           .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '')
+                           .replace(/[ABEHIKMNOPTXYZ]/g,
+                                    c => 'ΑΒΕΗΙΚΜΝΟΡΤΧΥΖ'['ABEHIKMNOPTXYZ'.indexOf(c)])
+                           .replace(/\\s+/g, ' ').trim();
+                       let best = null, bestDepth = 1e9;
+                       for (const el of document.querySelectorAll(css)) {
+                           let depth = 0;
+                           for (let p = el.parentElement; p; p = p.parentElement) {
+                               depth++;
+                               if (norm(p.innerText).includes(want)) {
+                                   if (depth < bestDepth) {
+                                       bestDepth = depth; best = el;
+                                   }
+                                   break;
+                               }
+                           }
+                       }
+                       if (!best) return null;
+                       const a = best.getAttribute('aria-checked');
+                       return best.checked === true || a === 'true';
+                   }""",
+            [self.CHECKBOX_CSS, label_norm(fragment)])
+
     async def _check_labeled_box(self, fragment: str, what: str) -> bool:
         """
         Τσεκάρει ΤΟ ΕΝΑ κουτάκι του οποίου η γραμμή περιέχει το `fragment`.
@@ -1612,18 +1666,84 @@ class MyAADEAutomation(BaseAutomation):
         # και η υποβολή φεύγει με μηδέν επιλεγμένες αιτίες.
         await box.scroll_into_view_if_needed(timeout=5_000)
         await box.click(timeout=5_000)
-        await self.page.wait_for_timeout(400)
+        # ΠΡΩΤΑ ΝΑ ΤΕΛΕΙΩΣΕΙ ΤΟ AJAX, ΜΕΤΑ ΕΛΕΓΧΟΣ: το JSF ξαναγράφει τη γραμμή
+        # λίγο μετά το κλικ, και αν ο server ΑΠΟΡΡΙΨΕΙ την επιλογή την ξεκάνει
+        # τότε. Διαβάζοντας αμέσως βλέπαμε το «τσεκαρισμένο» της στιγμής του
+        # κλικ και εγκρίναμε αίτηση που θα έφευγε με μηδέν αιτίες.
+        await self.page.wait_for_timeout(900)
 
-        checked = await self.page.evaluate(
-            """() => { const e = document.querySelector('[data-gdf-box="1"]');
-                       if (!e) return null;
-                       const a = e.getAttribute('aria-checked');
-                       return e.checked === true || a === 'true'; }""")
-        if checked:
-            self.log(f"    ✓ {fragment}")
-            return True
-        self.log(f"  ⚠️ Το κουτάκι «{fragment}» δεν έμεινε επιλεγμένο", "error")
+        # ΤΟ ΣΗΜΑΔΙ ΔΕΝ ΕΠΙΒΙΩΝΕΙ ΤΟΥ ΕΛΕΓΧΟΥ. Η σελίδα είναι JSF και σε κάθε
+        # αλλαγή κουτακιού στέλνει AJAX που ΞΑΝΑΓΡΑΦΕΙ το κομμάτι της φόρμας:
+        # το παλιό input πετιέται μαζί με το data-gdf-box, οπότε ο έλεγχος
+        # έβρισκε null και ανέφερε «δεν έμεινε επιλεγμένο» ενώ το κουτάκι ήταν
+        # κανονικά τσεκαρισμένο — η αιτία απορριπτόταν χωρίς λόγο. Ξαναβρίσκουμε
+        # λοιπόν το κουτάκι από την ΕΤΙΚΕΤΑ του, όπως την πρώτη φορά.
+        #
+        # Και με ΑΝΑΜΟΝΗ: το AJAX δεν έχει πάντα τελειώσει σε 400ms.
+        for _ in range(6):
+            checked = await self._labeled_box_checked(fragment)
+            if checked:
+                self.log(f"    ✓ {fragment}")
+                return True
+            await self.page.wait_for_timeout(500)
+
+        if checked is None:
+            self.log(f"  ⚠️ Το κουτάκι «{fragment}» χάθηκε από τη σελίδα μετά "
+                     f"το κλικ", "error")
+        else:
+            self.log(f"  ⚠️ Το κουτάκι «{fragment}» δεν έμεινε επιλεγμένο",
+                     "error")
         return False
+
+    # Ο πίνακας με τα στοιχεία της επιχείρησης, πάνω-πάνω στη φόρμα.
+    EFKA_APPLICANT_PANEL = "Στοιχεία Αιτούντος"
+
+    async def _efka_applicant_filled(self) -> Optional[bool]:
+        """
+        Γέμισε ο πίνακας «Στοιχεία Αιτούντος»; None αν δεν βρέθηκε καθόλου.
+
+        Κριτήριο ο ΑΦΜ: εννιά ψηφία μέσα στον πίνακα. Τα labels («Ονομ/μο -
+        Επωνυμία:», «Α.Φ.Μ.:») υπάρχουν ΠΑΝΤΑ, γεμάτος ή άδειος ο πίνακας,
+        οπότε σκέτο «έχει κείμενο» δεν ξεχωρίζει τίποτα.
+
+        Επιστρέφει None —και ΟΧΙ False— όταν ο πίνακας δεν εντοπίζεται: δεν
+        μπλοκάρουμε υποβολή επειδή άλλαξε η δομή της σελίδας.
+        """
+        try:
+            text = await self.page.evaluate(
+                """(title) => {
+                       const norm = s => (s || '').toUpperCase()
+                           .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+                       const want = norm(title);
+                       // Το ΠΙΟ ΣΤΕΝΟ στοιχείο που έχει τον τίτλο ΚΑΙ ΑΦΜ. Ο
+                       // τίτλος είναι σε δικό του στοιχείο (<b>/κεφαλίδα) που
+                       // δεν περιέχει ποτέ ψηφία: ζητώντας μόνο τον τίτλο
+                       // βγάζαμε πάντα «κενός πίνακας», ακόμη κι όταν ήταν
+                       // γεμάτος. Χωρίς ΑΦΜ πουθενά, κρατάμε τον πιο στενό
+                       // ώστε να επιστραφεί σωστά «κενός».
+                       let best = null, bestLen = 1e9;
+                       let fallback = null, fbLen = 1e9;
+                       const SKIP = ['SCRIPT', 'STYLE', 'HEAD', 'TEMPLATE',
+                                     'NOSCRIPT'];
+                       for (const el of document.querySelectorAll('*')) {
+                           // ΟΧΙ κείμενο από <script>: οι JSF σελίδες κουβαλούν
+                           // μέσα τους δεδομένα και ΑΦΜ, οπότε ο πίνακας
+                           // φαινόταν γεμάτος ενώ στην οθόνη ήταν άδειος.
+                           if (SKIP.includes(el.tagName)) continue;
+                           const t = el.innerText || '';
+                           if (!norm(t).includes(want)) continue;
+                           if (t.length < fbLen) { fbLen = t.length; fallback = el; }
+                           if (!/[0-9]{9}/.test(t)) continue;
+                           if (t.length < bestLen) { bestLen = t.length; best = el; }
+                       }
+                       const hit = best || fallback;
+                       return hit ? hit.innerText : null;
+                   }""", self.EFKA_APPLICANT_PANEL)
+        except Exception:
+            return None
+        if text is None:
+            return None
+        return bool(re.search(r"\d{9}", text))
 
     async def _select_insurance_kind(self, kind_label: str) -> bool:
         """Επιλέγει τιμή στο «Είδος Ασφαλ. Ενημερότητας» (κανονικό <select>)."""
@@ -1690,6 +1810,8 @@ class MyAADEAutomation(BaseAutomation):
                  f"{'αιτία' if len(keys) == 1 else 'αιτίες'}, είδος: {kind_label}")
 
         files: List[str] = []
+        submitted: List[tuple] = []      # (αιτία, αριθμός) — για τη σύνοψη
+        self._watch_dialogs()
         for n, key in enumerate(keys, 1):
             full_label, fragment = INSURANCE_REASONS[key]
             self.log(f"  ── Αιτία {n}/{len(keys)}: {full_label[:70]}")
@@ -1721,6 +1843,51 @@ class MyAADEAutomation(BaseAutomation):
                     f"Screenshot: {await self._shot(f'efka_kind_{key}')}"
                 )
 
+            # ΑΝ Ο ΠΙΝΑΚΑΣ ΕΙΝΑΙ ΑΔΕΙΟΣ, ΞΑΝΑ ΤΟ «ΕΙΔΟΣ». Η φόρμα φορτώνει τα
+            # στοιχεία της επιχείρησης με AJAX που πυροδοτεί το ίδιο το πεδίο
+            # «Είδος Ασφαλ. Ενημερότητας»· όταν δεν προλάβει, ο πίνακας μένει
+            # κενός και η υποβολή απορρίπτεται με «Ο Α.Φ.Μ. είναι υποχρεωτικό
+            # πεδίο» — χωρίς να φαίνεται πουθενά ότι έφταιγε ο χρονισμός.
+            for retry in range(3):
+                if await self._efka_applicant_filled() is not False:
+                    break
+                self.log(f"  ↻ Κενά «{self.EFKA_APPLICANT_PANEL}» — ξανά "
+                         f"επιλογή στο «Είδος Ασφαλ. Ενημερότητας» "
+                         f"({retry + 1}/3)")
+                await self._select_insurance_kind(kind_label)
+                await self.page.wait_for_timeout(2_500)
+
+            # ΥΠΟΒΑΛΛΟΥΜΕ ΚΑΙ ΜΕ ΚΕΝΟ ΠΙΝΑΚΑ. Ο πίνακας είναι ΕΜΦΑΝΙΣΗ: τα
+            # στοιχεία μπορεί να έχουν περάσει κανονικά στη συνεδρία και απλώς
+            # να μη ζωγραφίζονται. Και αν όντως λείπουν, ο ΕΦΚΑ απαντά «Ο
+            # Α.Φ.Μ. είναι υποχρεωτικό πεδίο» ΧΩΡΙΣ να καταχωρήσει αίτηση — το
+            # έχουμε δει. Άρα η δοκιμή δεν κοστίζει τίποτα, ενώ το να μην
+            # υποβάλουμε κόστιζε σίγουρα το έγγραφο.
+            if await self._efka_applicant_filled() is False:
+                self.log(f"  ⚠️ Ο πίνακας «{self.EFKA_APPLICANT_PANEL}» "
+                         f"φαίνεται κενός — υποβάλλω ούτως ή άλλως, μπορεί "
+                         f"απλώς να μην εμφανίζονται", "error")
+                self.log(f"     {await self._shot(f'efka_empty_{key}')}")
+
+            # ΤΕΛΕΥΤΑΙΑ ΕΝΕΡΓΕΙΑ ΠΡΙΝ ΤΗΝ ΥΠΟΒΟΛΗ: ξανά το «Είδος». Είναι αυτό
+            # που πυροδοτεί το AJAX φόρτωσης στοιχείων, και θέλουμε να έχει
+            # τρέξει όσο το δυνατόν πιο πρόσφατα σε σχέση με το «Υποβολή».
+            await self._select_insurance_kind(kind_label)
+            await self.page.wait_for_timeout(2_000)
+
+            # ΚΑΙ ΞΑΝΑΕΛΕΓΧΟΣ ΤΗΣ ΑΙΤΙΑΣ. Το AJAX του «Είδους» ξαναγράφει τη
+            # φόρμα, οπότε μπορεί να έχει χαθεί η επιλογή — και μια υποβολή με
+            # λάθος ή καμία αιτία είναι χειρότερη από αποτυχία, γιατί η αίτηση
+            # καταχωρείται δεσμευτικά και δεν αναιρείται.
+            if await self._labeled_box_checked(fragment) is False:
+                self.log("  ↻ Η αιτία ξετσεκαρίστηκε από την ανανέωση — ξανά")
+                if not await self._check_labeled_box(fragment, "αιτία χορήγησης"):
+                    raise RuntimeError(
+                        f"η αιτία «{full_label[:60]}» δεν έμεινε επιλεγμένη "
+                        f"μετά την ανανέωση της φόρμας — δεν υποβάλλεται "
+                        f"τίποτα, για να μη σταλεί αίτηση με λάθος αιτία. "
+                        f"Screenshot: {await self._shot(f'efka_recheck_{key}')}")
+
             pre = await self._shot(f"efka_before_ypovoli_{key}")
             self.log(f"  📷 Πριν την υποβολή: {pre}", "success")
 
@@ -1741,30 +1908,60 @@ class MyAADEAutomation(BaseAutomation):
                     f"Ενημερότητας» στη σελίδα {self.page.url}. "
                     f"Screenshot: {await self._shot(f'efka_submit_{key}')}"
                 )
-            self.log("  📨 Η αίτηση υποβλήθηκε")
             await self.page.wait_for_timeout(2_000)
+
+            # ΔΕΝ ΛΕΜΕ «ΥΠΟΒΛΗΘΗΚΕ» ΠΡΙΝ ΤΟ ΕΠΙΒΕΒΑΙΩΣΕΙ Ο ΕΦΚΑ. Όταν λείπει
+            # υποχρεωτικό πεδίο, η σελίδα ΔΕΝ καταχωρεί τίποτα και δείχνει
+            # κόκκινο μήνυμα. Το προηγούμενο μήνυμα έλεγε ότι υποβλήθηκε αίτηση
+            # που δεν υπήρχε, και συνιστούσε να μην ξαναδοκιμάσει ο χρήστης —
+            # ακριβώς το αντίθετο από το σωστό.
+            err = await self._efka_validation_error()
+            if err:
+                # RuntimeError, ΟΧΙ DocumentNotAvailable: με το δεύτερο η
+                # σύνοψη έλεγε «ℹ️ Δεν υπήρχαν: Ασφαλιστική Ενημερότητα», που
+                # σημαίνει ότι δεν υπάρχει το έγγραφο — ενώ εδώ υπάρχει και
+                # απλώς απέτυχε η αίτηση.
+                raise RuntimeError(
+                    f"ο e-ΕΦΚΑ ΔΕΝ δέχτηκε την αίτηση: «{err}». Δεν "
+                    f"καταχωρήθηκε τίποτα, μπορείς να ξαναδοκιμάσεις. "
+                    f"Screenshot: {await self._shot(f'efka_reject_{key}')}")
+
+            self.log("  📨 Η αίτηση υποβλήθηκε")
+            req_no = await self._efka_confirm_submission()
+            if req_no:
+                submitted.append((full_label, req_no))
+                self._note_request(dl_dir, client_name, full_label, req_no)
 
             fname = self.dated_filename(
                 client_name, f"Ασφαλιστική_Ενημερότητα_{key}")
             try:
-                await self._pdf(
-                    dl_dir / fname,
-                    "a[href*='.pdf'], a:has-text('PDF'), a:has-text('Εκτύπωση'), "
-                    "button:has-text('Εκτύπωση'), button:has-text('Λήψη'), "
-                    "a:has-text('Λήψη'), a:has-text('Εκτύπωση Αποδεικτικού')",
-                    doc_label=f"asfalistiki_{key}",
-                )
+                if not req_no:
+                    # ΔΕΝ ΜΑΝΤΕΥΟΥΜΕ ΓΡΑΜΜΗ. Χωρίς τον αριθμό δεν ξέρουμε ποια
+                    # από τις αιτήσεις της λίστας είναι η δική μας, και ο
+                    # «Έλεγχος Αποτελέσματος» άλλης γραμμής θα κατέβαζε ΑΛΛΟ
+                    # έγγραφο με σωστό όνομα αρχείου.
+                    raise RuntimeError(
+                        "η υποβολή έγινε αλλά δεν διαβάστηκε ο αριθμός "
+                        "αίτησης, οπότε δεν ξεχωρίζει η γραμμή μας στη λίστα")
+                await self._efka_fetch_result(
+                    req_no, dl_dir / fname, f"asfalistiki_{key}")
             except Exception as e:
                 # Η αίτηση ΕΧΕΙ ήδη υποβληθεί — δεν ξαναπροσπαθούμε, θα γινόταν
                 # δεύτερη αίτηση στον ΕΦΚΑ. Το λέμε καθαρά και προχωράμε.
-                self.log(f"  ⚠️ Η αίτηση για «{full_label[:50]}» υποβλήθηκε, "
-                         f"αλλά δεν κατέβηκε το αρχείο: {e}", "error")
+                self.log(f"  ⚠️ Η αίτηση για «{full_label[:50]}» υποβλήθηκε"
+                         f"{f' ({req_no})' if req_no else ''}, αλλά δεν "
+                         f"κατέβηκε το αρχείο: {e}", "error")
                 self.log("     Κατέβασέ το από το ιστορικό αιτήσεων του "
                          "e-ΕΦΚΑ — ΜΗΝ ξαναϋποβάλεις.", "error")
                 continue
 
             self.log(f"✅ {fname}", "success")
             files.append(fname)
+
+        if submitted:
+            self.log("  🧾 Αριθμοί αιτήσεων e-ΕΦΚΑ αυτού του τρεξίματος:")
+            for lbl, no in submitted:
+                self.log(f"     {no} — {lbl[:60]}")
 
         if not files:
             raise RuntimeError(
@@ -1773,6 +1970,261 @@ class MyAADEAutomation(BaseAutomation):
                 "στον e-ΕΦΚΑ πριν ξαναδοκιμάσεις."
             )
         return files
+
+    def _watch_dialogs(self) -> None:
+        """
+        Κρατάει το κείμενο τυχόν alert του browser και το αποδέχεται.
+
+        Το popup του ΕΦΚΑ είναι στοιχείο της σελίδας, όχι alert — αλλά χωρίς
+        handler η Playwright ΑΠΟΡΡΙΠΤΕΙ σιωπηλά κάθε alert, οπότε αν κάποια
+        οθόνη τον χρησιμοποιεί, ο αριθμός αίτησης θα χανόταν χωρίς ίχνος.
+        """
+        if getattr(self, "_dialog_watch", False):
+            return
+        self._dialog_watch = True
+        self._last_dialog = None
+
+        def _on_dialog(dialog):
+            self._last_dialog = dialog.message
+            asyncio.ensure_future(dialog.accept())
+
+        self.page.on("dialog", _on_dialog)
+
+    def _note_request(self, dl_dir: Path, client_name: str,
+                      reason: str, req_no: str) -> None:
+        """
+        Γράφει τον αριθμό αίτησης δίπλα στα PDF.
+
+        ΓΙΑΤΙ ΑΡΧΕΙΟ ΚΑΙ ΟΧΙ ΜΟΝΟ LOG: με αυτόν τον αριθμό ανακτάται η
+        βεβαίωση από το ιστορικό του e-ΕΦΚΑ όταν η λήψη αποτύχει — και η
+        αίτηση ΔΕΝ ξαναϋποβάλλεται. Το log καθαρίζεται, τα PDF μένουν.
+        """
+        path = dl_dir / f"{client_name}_Αριθμοί_Αιτήσεων_ΕΦΚΑ.txt"
+        line = f"{date.today().isoformat()}\t{req_no}\t{reason}\n"
+        try:
+            dl_dir.mkdir(parents=True, exist_ok=True)
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(line)
+        except Exception as e:
+            # Η σημείωση είναι βοήθημα· αν αποτύχει, ο αριθμός είναι ήδη στο log.
+            self.log(f"  ⚠️ Δεν γράφτηκε η σημείωση αριθμού: {e}", "error")
+
+    # Το πεδίο ΑΦΜ της οθόνης επιλογής ρόλου. Δύο καρτέλες, καθεμία με δικό
+    # της πεδίο — μας ενδιαφέρει ΠΑΝΤΑ το ορατό, δηλαδή της ενεργής καρτέλας.
+    AFM_LABEL = "ΑΦΜ"
+
+    async def _afm_field_value(self) -> Optional[str]:
+        """Η τιμή του ΟΡΑΤΟΥ πεδίου ΑΦΜ, ή None αν δεν υπάρχει/είναι κενό."""
+        try:
+            return await self.page.evaluate(
+                """(want) => {
+                       const vis = el => {
+                           const r = el.getBoundingClientRect();
+                           if (r.width <= 0 || r.height <= 0) return false;
+                           const st = getComputedStyle(el);
+                           return st.visibility !== 'hidden' &&
+                                  st.display !== 'none';
+                       };
+                       for (const el of document.querySelectorAll(
+                                'input[type=text], input:not([type])')) {
+                           if (!vis(el)) continue;
+                           const row = el.closest('div, td, li, form');
+                           const t = ((row ? row.innerText : '') || '')
+                                     .toUpperCase();
+                           if (!t.includes(want)) continue;
+                           const v = (el.value || '').trim();
+                           if (v) return v;
+                       }
+                       return null;
+                   }""", self.AFM_LABEL)
+        except Exception:
+            return None
+
+    async def _fill_afm_field(self, afm: str) -> bool:
+        """Γράφει το ΑΦΜ στο ΟΡΑΤΟ κενό πεδίο ΑΦΜ της ενεργής καρτέλας."""
+        try:
+            ok = await self.page.evaluate(
+                """([want, afm]) => {
+                       const vis = el => {
+                           const r = el.getBoundingClientRect();
+                           if (r.width <= 0 || r.height <= 0) return false;
+                           const st = getComputedStyle(el);
+                           return st.visibility !== 'hidden' &&
+                                  st.display !== 'none';
+                       };
+                       for (const el of document.querySelectorAll(
+                                'input[type=text], input:not([type])')) {
+                           if (!vis(el) || (el.value || '').trim()) continue;
+                           const row = el.closest('div, td, li, form');
+                           const t = ((row ? row.innerText : '') || '')
+                                     .toUpperCase();
+                           if (!t.includes(want)) continue;
+                           el.setAttribute('data-gdf-afm', '1');
+                           return true;
+                       }
+                       return false;
+                   }""", [self.AFM_LABEL, afm])
+            if not ok:
+                return False
+            # ΠΡΑΓΜΑΤΙΚΗ πληκτρολόγηση, όχι el.value: η σελίδα ακούει events.
+            await self.page.fill('[data-gdf-afm="1"]', afm)
+            return True
+        except Exception as e:
+            self.log(f"  ⚠️ Δεν συμπληρώθηκε το ΑΦΜ: "
+                     f"{str(e).splitlines()[0]}", "error")
+            return False
+
+    # Μηνύματα της σελίδας που σημαίνουν ΑΠΟΡΡΙΨΗ, όχι καταχώρηση.
+    EFKA_ERROR_PATTERNS = ["ΥΠΟΧΡΕΩΤΙΚΟ ΠΕΔΙΟ", "ΔΕΝ ΕΙΝΑΙ ΕΓΚΥΡ",
+                           "ΣΦΑΛΜΑ", "ΑΠΟΤΥΧ"]
+
+    async def _efka_validation_error(self) -> Optional[str]:
+        """
+        Το ΟΡΑΤΟ μήνυμα σφάλματος της φόρμας, αν υπάρχει.
+
+        Μόνο ορατά: τα μηνύματα του PrimeFaces υπάρχουν στο DOM άδεια ή κρυφά
+        και πριν εμφανιστούν — ίδια παγίδα με το popup επιτυχίας.
+        """
+        try:
+            texts = await self.page.evaluate(
+                """() => {
+                       const vis = el => {
+                           const r = el.getBoundingClientRect();
+                           if (r.width <= 0 || r.height <= 0) return false;
+                           const st = getComputedStyle(el);
+                           return st.visibility !== 'hidden' &&
+                                  st.display !== 'none' && st.opacity !== '0';
+                       };
+                       const out = [];
+                       const css = ".ui-message-error, .ui-messages-error, " +
+                                   "[class*='error'], [class*='Error']";
+                       for (const el of document.querySelectorAll(css)) {
+                           if (!vis(el)) continue;
+                           const t = (el.innerText || '').trim();
+                           if (t && t.length < 200) out.push(t);
+                       }
+                       return out;
+                   }""")
+        except Exception:
+            return None
+        for t in texts or []:
+            up = gr_norm(t)
+            if any(pat in up for pat in self.EFKA_ERROR_PATTERNS):
+                return " ".join(t.split())[:120]
+        return None
+
+    async def _efka_confirm_submission(self) -> Optional[str]:
+        """
+        Το popup «Επιτυχής Υποβολή Αίτησης»: κρατάει τον αριθμό, πατάει «OK».
+
+        Ο ΑΡΙΘΜΟΣ ΔΙΑΒΑΖΕΤΑΙ ΠΡΙΝ ΤΟ ΚΛΙΚ — με το «OK» το popup φεύγει και ο
+        αριθμός δεν ξαναεμφανίζεται πουθενά στη ροή. Είναι το ΜΟΝΟ πράγμα που
+        ξεχωρίζει τη δική μας αίτηση στη λίστα, και το μόνο που μένει στον
+        χρήστη αν κάτι στραβώσει παρακάτω: η αίτηση έχει ήδη καταχωρηθεί.
+        """
+        # ΠΕΡΙΜΕΝΟΥΜΕ ΤΟ DIALOG ΝΑ ΓΙΝΕΙ ΟΡΑΤΟ, και διαβάζουμε ΜΟΝΟ το δικό
+        # του κείμενο. Το popup είναι PrimeFaces: υπάρχει στο DOM από την αρχή,
+        # κρυφό και ΧΩΡΙΣ αριθμό — ο αριθμός μπαίνει όταν εμφανίζεται. Διαβάζοντας
+        # όλο το body βλέπαμε το άδειο πρότυπο και δεν βρίσκαμε ποτέ αριθμό.
+        req = None
+        for _ in range(20):
+            text = await self.page.evaluate(
+                """(title) => {
+                       const norm = s => (s || '').toUpperCase()
+                           .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '')
+                           .replace(/\\s+/g, ' ').trim();
+                       const want = norm(title);
+                       const vis = el => {
+                           const r = el.getBoundingClientRect();
+                           if (r.width <= 0 || r.height <= 0) return false;
+                           const st = getComputedStyle(el);
+                           return st.visibility !== 'hidden' &&
+                                  st.display !== 'none' && st.opacity !== '0';
+                       };
+                       // Το ΠΙΟ ΣΤΕΝΟ ορατό στοιχείο που περιέχει τον τίτλο ΚΑΙ
+                       // αριθμό αίτησης. Ο τίτλος είναι σε δικό του <h3> και ο
+                       // αριθμός σε ΔΙΠΛΑΝΗ παράγραφο: ζητώντας μόνο τον τίτλο
+                       // κρατούσαμε το <h3>, που δεν έχει ποτέ αριθμό. Ζητώντας
+                       // μόνο αριθμό θα πιάναμε τη λίστα αιτήσεων από κάτω.
+                       const NUM = /[ΦF]\\s*[/]\\s*[0-9]+\\s*[/]\\s*[0-9]{4}/;
+                       let best = null, bestLen = 1e9;
+                       let fallback = null, fbLen = 1e9;
+                       for (const el of document.querySelectorAll('*')) {
+                           if (!vis(el)) continue;
+                           const t = el.innerText || '';
+                           if (!norm(t).includes(want)) continue;
+                           if (t.length < fbLen) { fbLen = t.length; fallback = el; }
+                           if (!NUM.test(t)) continue;
+                           if (t.length < bestLen) { bestLen = t.length; best = el; }
+                       }
+                       const hit = best || fallback;
+                       return hit ? hit.innerText : null;
+                   }""", self.EFKA_SUCCESS_TITLE)
+
+            haystack = " ".join((text or "").split())
+            if getattr(self, "_last_dialog", None):
+                # Αν το popup ήρθε ως alert του browser, το μήνυμά του το
+                # κράτησε ο handler του _watch_dialogs().
+                haystack = f"{self._last_dialog} {haystack}"
+            m = EFKA_REQ_NO_RE.search(haystack)
+            if m:
+                req = m.group(0).replace(" ", "")
+                break
+            await self.page.wait_for_timeout(1_000)
+
+        if req:
+            self.log(f"  🧾 Αριθμός αίτησης: {req}", "success")
+        else:
+            self.log("  ⚠️ Δεν βρέθηκε αριθμός αίτησης στο μήνυμα "
+                     f"επιβεβαίωσης. Screenshot: {await self._shot('efka_popup')}",
+                     "error")
+
+        # «OK» με ΕΓΓΥΤΗΤΑ στον τίτλο του popup: η λέξη είναι δύο γράμματα και
+        # σκέτο ταίριασμα θα την έβρισκε οπουδήποτε στη σελίδα.
+        if not await self._click_near(self.EFKA_OK_LABEL,
+                                      self.EFKA_SUCCESS_TITLE,
+                                      "OK επιβεβαίωσης", attempts=3):
+            await self._click_any(self.EFKA_OK_LABEL, "OK επιβεβαίωσης",
+                                  attempts=2)
+        await self.page.wait_for_timeout(1_500)
+        return req
+
+    async def _efka_fetch_result(self, req_no: str, filepath: Path,
+                                 doc_label: str) -> None:
+        """
+        Λίστα υποβληθεισών αιτήσεων: ανανέωση, «Έλεγχος Αποτελέσματος», λήψη.
+
+        ΑΝΑΝΕΩΣΗ ΜΕ GET, ΟΧΙ page.reload(). Η σελίδα είναι αποτέλεσμα POST του
+        JSF: το reload ξαναστέλνει την υποβολή, δηλαδή θα ΔΗΜΙΟΥΡΓΟΥΣΕ ΔΕΥΤΕΡΗ
+        ΑΙΤΗΣΗ στον ΕΦΚΑ — και οι αιτήσεις δεν αναιρούνται. Η ίδια διεύθυνση με
+        GET δίνει την ίδια ενημερωμένη λίστα, χωρίς αυτόν τον κίνδυνο.
+        """
+        self.log(f"  ⏳ Αναμονή {self.EFKA_RESULT_WAIT_S}″ να επεξεργαστεί ο "
+                 f"ΕΦΚΑ την αίτηση…")
+        await self.page.wait_for_timeout(self.EFKA_RESULT_WAIT_S * 1_000)
+        await self._goto(self.page.url)
+        await self.page.wait_for_timeout(1_000)
+
+        # Το κλικ ΜΟΝΟ στη γραμμή του δικού μας αριθμού. Η λίστα δείχνει τις
+        # αιτήσεις 2 ημερών: το «Έλεγχος Αποτελέσματος» της λάθος γραμμής θα
+        # κατέβαζε άλλο έγγραφο με σωστό όνομα αρχείου.
+        self.reset_pdf_captures()
+        if not await self._click_near(self.EFKA_RESULT_LABEL, req_no,
+                                      f"έλεγχος αποτελέσματος {req_no}",
+                                      attempts=4):
+            raise RuntimeError(
+                f"δεν βρέθηκε «{self.EFKA_RESULT_LABEL}» στη γραμμή της "
+                f"αίτησης {req_no} στο {self.page.url}. "
+                f"Screenshot: {await self._shot(f'efka_result_{doc_label}')}")
+        await self.page.wait_for_timeout(3_000)
+
+        await self._pdf(
+            filepath,
+            "a[href*='.pdf'], a:has-text('PDF'), a:has-text('Εκτύπωση'), "
+            "button:has-text('Εκτύπωση'), button:has-text('Λήψη'), "
+            "a:has-text('Λήψη'), a:has-text('Εκτύπωση Αποδεικτικού')",
+            doc_label=doc_label,
+        )
 
     async def _on_efka_form(self) -> bool:
         """True αν φορτώθηκε όντως η φόρμα αιτήσεων του e-ΕΦΚΑ."""
@@ -1796,9 +2248,39 @@ class MyAADEAutomation(BaseAutomation):
     EFKA_ENTER_LABEL = "Είσοδος"
     EFKA_LOGOUT_LABEL = "Αποσύνδεση"
     EFKA_CONSENT_LABELS = ["Εξουσιοδότηση", "Συμφωνώ", "Αποδοχή"]
+    # Η οθόνη εξουσιοδότησης του oauth2 («…η εφαρμογή ΟΠΣ ΕΦΚΑ - eAccess θα
+    # αποκτήσει πρόσβαση στα βασικά στοιχεία Μητρώου…»): «Επιστροφή» και
+    # «Συνέχεια» είναι RADIO BUTTONS, όχι κουμπιά — η υποβολή γίνεται με το
+    # «Αποστολή». Πατώντας το «Συνέχεια» ως κουμπί απλώς ξαναεπιλεγόταν το
+    # ήδη επιλεγμένο radio και η σελίδα έμενε ίδια σε ατέρμονο βρόχο.
+    # Μετά την υποβολή: popup «Επιτυχής Υποβολή Αίτησης» με τον αριθμό αίτησης,
+    # μετά λίστα «Υποβληθείσες Αιτήσεις … τελευταίων 2 ημερών» με μία γραμμή ανά
+    # αίτηση και σύνδεσμο «Έλεγχος Αποτελέσματος» στη στήλη Ενέργειες.
+    EFKA_SUCCESS_TITLE = "Επιτυχής Υποβολή Αίτησης"
+    EFKA_OK_LABEL = "OK"
+    EFKA_RESULT_LABEL = "Έλεγχος Αποτελέσματος"
+    # Οι επιλογές μενού που οδηγούν στη φόρμα, ΜΕ ΤΗ ΣΕΙΡΑ ΠΟΥ ΕΜΦΑΝΙΖΟΝΤΑΙ:
+    # πρώτα η πύλη του eAccess (index.xhtml) και μετά, αν υπάρχει, το μενού της
+    # ίδιας της εφαρμογής.
+    #
+    # ΠΡΟΣΟΧΗ ΣΤΑ ΓΕΙΤΟΝΙΚΑ: στην ίδια σελίδα υπάρχει «Έλεγχος Εγκυρότητας
+    # Αποδεικτικού Ασφαλιστικής Ενημερότητας», που είναι ΑΛΛΗ υπηρεσία — ελέγχει
+    # ξένο αποδεικτικό, δεν εκδίδει. Ξεχωρίζει γιατί λέει «Αποδεικτικού» με
+    # ύψιλον, ενώ η δική μας λέει «Αποδεικτικό»· υπάρχει test που το φυλάει.
+    # Ομοίως το «Αίτηση ΑΑΕ Οικοδομοτεχνικού Έργου» είναι άλλη αίτηση.
+    EFKA_MENU_LABELS = ["Αποδεικτικό Ασφαλιστικής Ενημερότητας",
+                        "Αίτηση Αποδεικτικού Ασφαλιστικής Ενημερότητας"]
+    # Ο ΕΦΚΑ χρειάζεται λίγο για να επεξεργαστεί την αίτηση· νωρίτερα ο
+    # «Έλεγχος Αποτελέσματος» δεν δίνει ακόμα αρχείο.
+    EFKA_RESULT_WAIT_S = 15
+    EFKA_CONSENT_CHOICE = "Συνέχεια"
+    EFKA_CONSENT_SUBMIT = "Αποστολή"
     # Το κείμενο του secureError.xhtml, όταν η σύνδεση έγινε με ρόλο που δεν
     # έχει πρόσβαση σε αυτή την εφαρμογή.
     EFKA_NO_ACCESS = "Δεν έχετε δικαίωμα πρόσβασης"
+    # Το j_security_check όταν απορριφθεί η φόρμα του ίδιου του eAccess.
+    EFKA_LOGIN_ERROR = "Σφάλμα Εισόδου"
+    EFKA_BACK_LABEL = "Επιστροφή"
 
     async def _has_clickable(self, label: str) -> bool:
         """
@@ -1832,15 +2314,57 @@ class MyAADEAutomation(BaseAutomation):
         # (ασφαλισμένος) και απαντά «δεν έχετε δικαίωμα πρόσβασης». Αφού
         # στηθεί η συνεδρία με τον σωστό ρόλο, το απευθείας URL δουλεύει.
         if getattr(self, "_efka_logged_in", False):
-            await self._goto(EFKA_ENTRY)
+            await self._goto(EFKA_APP_ROOT)
         else:
             await self._goto(EFKA_LOGIN_ENTRY)
 
         relogin_tries = 0
         recovery_tries = 0
-        for _ in range(8):
+        back_tries = 0
+        direct_tried = False
+        # 12 και όχι 8: οι οθόνες είναι πλέον έξι (eAccess, κωδικοί,
+        # εξουσιοδότηση, ρόλος, μενού, φόρμα) και θέλουμε περιθώριο για
+        # μια επανασύνδεση ή μια ανάκαμψη ενδιάμεσα.
+        for step in range(1, 13):
             if await self._on_efka_form():
+                self.log(f"  ✅ Η φόρμα του e-ΕΦΚΑ φόρτωσε (βήμα {step})",
+                         "success")
                 return True
+
+            # ΔΙΑΓΝΩΣΤΙΚΟ: σε ΚΑΘΕ οθόνη του ΕΦΚΑ κρατάμε screenshot,
+            # url και τις ετικέτες των κλικαρισμών. Η σύνδεση σπάει σε
+            # αγνώστη οθόνη και χωρίς αυτά δεν υπάρχει κανένας τρόπος να
+            # μάθουμε ποια ήταν — το τελικό screenshot δείχνει μόνο την τελευταία.
+            # Ξεχωριστό αρχείο ανά βήμα: σταθερό όνομα θα έσβηνε το προηγούμενο.
+            shot = await self._shot(f"efka_step{step}")
+            # ΤΑ VALUES ΤΩΝ ΠΕΔΙΩΝ ΔΕΝ ΜΠΑΙΝΟΥΝ ΣΤΟ LOG. Το _tile_choices()
+            # επιστρέφει και το el.value, και στην οθόνη σύνδεσης το πεδίο
+            # του κωδικού είναι ΓΕΜΑΤΟ — ο κωδικός του πελάτη κατέληξε
+            # καθαρό κείμενο στο gov_doc_fetcher.log. Κρατάμε ΜΟΝΟ ετικέτες
+            # στοιχείων που ΔΕΝ είναι πεδία εισαγωγής.
+            try:
+                labels = [" ".join(t["label"].split())[:40]
+                          for t in await self._tile_choices()
+                          if not t.get("is_input")][:15]
+            except Exception:
+                labels = []
+            self.log(f"  📷 Οθόνη {step}: {self.page.url}")
+            self.log(f"     {shot}")
+            if labels:
+                self.log(f"     Κλικαρίσματα: {' | '.join(labels)}")
+
+            # ΠΡΩΤΑ ΤΟ «ΣΥΝΕΧΕΙΑ ΣΤΟ TAXISNET», ΠΡΙΝ ΑΠΟ ΚΑΘΕ ΦΟΡΜΑ ΚΩΔΙΚΩΝ.
+            # Το eAccess/login.xhtml έχει ΚΑΙ δική του φόρμα «Κωδικός Χρήστη /
+            # Συνθηματικό» — είναι η καρτέλα «Ασφαλισμένος», που θέλει ΑΜΚΑ.
+            # Με τον έλεγχο της φόρμας πρώτο, οι κωδικοί TaxisNet έμπαιναν εκεί
+            # και ο ΕΦΚΑ απαντούσε «Τα στοιχεία που έχετε εισάγει δεν είναι
+            # έγκυρα» στο j_security_check — μοιάζει με λάθος κωδικό, ενώ ήταν
+            # απλώς λάθος φόρμα. Όπου προσφέρεται το SSO, το SSO κερδίζει.
+            if await self._has_clickable(self.EFKA_SSO_LABEL):
+                await self._click_any(self.EFKA_SSO_LABEL,
+                                      "σύνδεση ΕΦΚΑ μέσω TaxisNet", attempts=2)
+                await self.page.wait_for_timeout(2_000)
+                continue
 
             # Φόρμα κωδικών του oauth2.gsis.gr. ΔΕΝ είναι ο ίδιος auth server
             # με το login.gsis.gr της ΑΑΔΕ, οπότε η συνεδρία ΔΕΝ μεταφέρεται:
@@ -1849,12 +2373,38 @@ class MyAADEAutomation(BaseAutomation):
             sels = await self._find_login_form()
             if sels:
                 if relogin_tries >= 2 or not getattr(self, "_creds", None):
+                    why = ("δεν υπάρχουν αποθηκευμένοι κωδικοί"
+                           if not getattr(self, "_creds", None)
+                           else "οι κωδικοί δόθηκαν 2 φορές και η σελίδα "
+                                "ξαναζητάει σύνδεση")
                     self.log("  ⚠️ Ο ΕΦΚΑ ζητά ξανά κωδικούς και η επανασύνδεση "
-                             "δεν πέτυχε", "error")
+                             f"δεν πέτυχε — {why}", "error")
+                    self.log(f"     Δες το screenshot: {shot}", "error")
                     return False
                 relogin_tries += 1
                 self.log("  🔑 Ο ΕΦΚΑ ζητά σύνδεση — εισαγωγή κωδικών")
                 await self._submit_gsis_form(*self._creds, sels=sels)
+                after = await self._shot(f"efka_step{step}_meta_login")
+                self.log(f"     Μετά τους κωδικούς: {self.page.url}")
+                self.log(f"     {after}")
+                continue
+
+            # «Σφάλμα Εισόδου» στο j_security_check: υποβλήθηκε φόρμα που δεν
+            # δεχόταν αυτά τα στοιχεία. Δεν ξαναδοκιμάζουμε κωδικούς εδώ —
+            # γυρνάμε στην αρχή, όπου πλέον προηγείται το «Συνέχεια στο
+            # TAXISNET». Μία φορά μόνο: αν ξαναβγεί, το πρόβλημα είναι αλλού.
+            if self.EFKA_LOGIN_ERROR in await self._body_text():
+                if back_tries:
+                    self.log("  ⚠️ Ο ΕΦΚΑ επιμένει «Σφάλμα Εισόδου» — "
+                             "έλεγξε τους κωδικούς TaxisNet", "error")
+                    return False
+                back_tries += 1
+                self.log("  ↺ «Σφάλμα Εισόδου» — επιστροφή και σύνδεση μέσω "
+                         "TAXISNET")
+                await self._click_any(self.EFKA_BACK_LABEL, "επιστροφή",
+                                      attempts=1)
+                await self.page.wait_for_timeout(1_500)
+                await self._goto(EFKA_LOGIN_ENTRY)
                 continue
 
             # «Δεν έχετε δικαίωμα πρόσβασης»: η σύνδεση έγινε με τον
@@ -1874,26 +2424,49 @@ class MyAADEAutomation(BaseAutomation):
                 await self._goto(EFKA_LOGIN_ENTRY)
                 continue
 
-            if await self._has_clickable(self.EFKA_SSO_LABEL):
-                await self._click_any(self.EFKA_SSO_LABEL,
-                                      "σύνδεση ΕΦΚΑ μέσω TaxisNet", attempts=2)
-                await self.page.wait_for_timeout(2_000)
+            # Το μενού: από εδώ ανοίγει η φόρμα ΜΕ τα στοιχεία της επιχείρησης.
+            picked_menu = False
+            for menu_label in self.EFKA_MENU_LABELS:
+                if not await self._has_clickable(menu_label):
+                    continue
+                if await self._click_any(menu_label, "επιλογή μενού ΕΦΚΑ",
+                                         attempts=2):
+                    await self.page.wait_for_timeout(2_500)
+                    picked_menu = True
+                    break
+            if picked_menu:
                 continue
 
             # Οθόνη επιλογής ρόλου: πρώτα η καρτέλα, μετά το «Είσοδος».
             if await self._has_clickable(self.EFKA_ROLE_LABEL):
+                # ΤΟ ΑΦΜ ΠΡΙΝ ΤΗΝ ΑΛΛΑΓΗ ΚΑΡΤΕΛΑΣ: στην καρτέλα «Ασφαλισμένος»
+                # έρχεται συμπληρωμένο από τη σύνδεση. Το κρατάμε γιατί αν η
+                # καρτέλα «Επιχείρηση/Πολίτης» εμφανιστεί με ΚΕΝΟ ΑΦΜ, η
+                # συνεδρία στήνεται χωρίς αυτό: τα «Στοιχεία Αιτούντος» της
+                # φόρμας μένουν άδεια και η υποβολή απορρίπτεται με «Ο Α.Φ.Μ.
+                # είναι υποχρεωτικό πεδίο», πολλές οθόνες αργότερα.
+                afm = await self._afm_field_value()
                 if await self._click_any(self.EFKA_ROLE_LABEL,
                                          "καρτέλα Επιχείρηση/Πολίτης",
                                          attempts=2):
                     self.log("  👤 Καρτέλα «Επιχείρηση/Πολίτης»")
                     await self.page.wait_for_timeout(1_000)
+                if afm and not await self._afm_field_value():
+                    if await self._fill_afm_field(afm):
+                        self.log(f"  ✍️ Συμπληρώθηκε το ΑΦΜ {afm} στην καρτέλα")
+                self.log(f"  📷 Πριν την είσοδο: {await self._shot('efka_role')}")
                 await self._click_any(self.EFKA_ENTER_LABEL, "Είσοδος ΕΦΚΑ",
                                       attempts=2)
                 await self.page.wait_for_timeout(2_500)
-                # Ο ΕΦΚΑ προσγειώνει σε αρχική, όχι στη φόρμα — τη ζητάμε ρητά.
-                if not await self._on_efka_form():
-                    await self._goto(EFKA_ENTRY)
+                # Ο ΕΦΚΑ προσγειώνει στο μενού της εφαρμογής. ΤΟ ΑΦΗΝΟΥΜΕ:
+                # η φόρμα πρέπει να ανοίξει από εκεί (δες EFKA_APP_ROOT).
                 continue
+
+            # Συγκατάθεση με radio + «Αποστολή» (δες EFKA_CONSENT_SUBMIT).
+            if await self._has_clickable(self.EFKA_CONSENT_SUBMIT):
+                if await self._efka_consent():
+                    await self.page.wait_for_timeout(2_500)
+                    continue
 
             consented = False
             for label in self.EFKA_CONSENT_LABELS:
@@ -1906,7 +2479,23 @@ class MyAADEAutomation(BaseAutomation):
             if consented:
                 continue
 
-            break   # άγνωστη οθόνη — δεν μαντεύουμε κλικ σε ζωντανό portal
+            # ΕΣΧΑΤΗ ΛΥΣΗ: το απευθείας URL της φόρμας. Δοκιμάζεται ΜΙΑ φορά
+            # και μόνο αφού δεν βρέθηκε η επιλογή του μενού, γιατί έτσι η φόρμα
+            # ανοίγει χωρίς τα «Στοιχεία Αιτούντος» — καλύτερο από το τίποτα,
+            # αλλά η υποβολή πιθανότατα θα απορριφθεί.
+            if not direct_tried:
+                direct_tried = True
+                self.log("  ↷ Δεν βρέθηκε η επιλογή στο μενού — δοκιμή με "
+                         "απευθείας URL (η φόρμα μπορεί να μείνει χωρίς "
+                         "στοιχεία)", "error")
+                await self._goto(EFKA_ENTRY)
+                continue
+
+            # Άγνωστη οθόνη — δεν μαντεύουμε κλικ σε ζωντανό portal. Το
+            # screenshot και οι ετικέτες έχουν ήδη καταγραφεί παραπάνω.
+            self.log("  ⛔ Άγνωστη οθόνη ΕΦΚΑ — σταματάω αντί να μαντέψω κλικ",
+                     "error")
+            break
 
         ok = await self._on_efka_form()
         if ok:
@@ -1919,6 +2508,73 @@ class MyAADEAutomation(BaseAutomation):
         (SEL_USER, SEL_PASS, SEL_SUB),                     # login.gsis.gr (ΑΑΔΕ)
         (SEL_OAUTH_USER, SEL_OAUTH_PASS, SEL_OAUTH_SUB),   # oauth2.gsis.gr (ΕΦΚΑ)
     ]
+
+    async def _efka_consent(self) -> bool:
+        """
+        Η οθόνη εξουσιοδότησης του oauth2: επιλογή «Συνέχεια» και «Αποστολή».
+
+        ΤΟ RADIO ΤΟ ΨΑΧΝΟΥΜΕ ΜΕ ΤΗ ΔΙΚΗ ΤΟΥ ΕΤΙΚΕΤΑ, ΑΚΡΙΒΩΣ. Τα δύο radio
+        είναι στην ΙΔΙΑ γραμμή, οπότε το «κείμενο της γύρω γραμμής» είναι
+        «Επιστροφή Συνέχεια» και για τα δύο: με ασαφές ταίριασμα θα διαλεγόταν
+        το ΠΡΩΤΟ, δηλαδή η «Επιστροφή». Συνήθως το «Συνέχεια» είναι ήδη
+        επιλεγμένο και δεν χρειάζεται κλικ.
+        """
+        want = label_norm(self.EFKA_CONSENT_CHOICE)
+        state = await self.page.evaluate(
+            """(want) => {
+                   document.querySelectorAll('[data-gdf-radio]')
+                       .forEach(e => e.removeAttribute('data-gdf-radio'));
+                   // ΙΔΙΑ κανονικοποίηση με το label_norm(): ΚΕΦΑΛΑΙΑ ΧΩΡΙΣ
+                   // τόνους. Το «Συνέχεια» έχει τόνο και σκέτο toUpperCase()
+                   // δίνει «ΣΥΝΈΧΕΙΑ», που δεν ταιριάζει ΠΟΤΕ με το «ΣΥΝΕΧΕΙΑ».
+                   const norm = t => (t || '').replace(/\\s+/g, ' ').trim()
+                                              .toUpperCase()
+                                              .normalize('NFD')
+                                              .replace(/[\\u0300-\\u036f]/g, '');
+                   const lab = r => {
+                       let t = '';
+                       if (r.id) {
+                           const l = document.querySelector(
+                               'label[for="' + r.id + '"]');
+                           if (l) t = l.innerText;
+                       }
+                       if (!t && r.closest('label'))
+                           t = r.closest('label').innerText;
+                       if (!t && r.nextElementSibling)
+                           t = r.nextElementSibling.innerText || '';
+                       return (t || '').replace(/\\s+/g, ' ').trim();
+                   };
+                   const rs = [...document.querySelectorAll(
+                       "input[type='radio']")];
+                   const hit = rs.find(r => norm(lab(r)) === want);
+                   if (!hit) return {found: false,
+                                     labels: rs.map(lab).slice(0, 6)};
+                   hit.setAttribute('data-gdf-radio', '1');
+                   return {found: true, checked: hit.checked};
+               }""", want)
+
+        if not state.get("found"):
+            self.log(f"  ⚠️ Δεν βρέθηκε η επιλογή «{self.EFKA_CONSENT_CHOICE}» "
+                     f"στην οθόνη εξουσιοδότησης. "
+                     f"Διαθέσιμες: {state.get('labels')}", "error")
+            return False
+
+        if state.get("checked"):
+            self.log(f"  ☑ «{self.EFKA_CONSENT_CHOICE}» ήδη επιλεγμένο")
+        else:
+            try:
+                await self.page.click("[data-gdf-radio]", timeout=3_000)
+                self.log(f"  ☑ Επιλέχθηκε «{self.EFKA_CONSENT_CHOICE}»")
+            except Exception as e:
+                self.log(f"  ⚠️ Δεν επιλέχθηκε το radio: "
+                         f"{str(e).splitlines()[0]}", "error")
+                return False
+
+        if not await self._click_any(self.EFKA_CONSENT_SUBMIT,
+                                     "αποστολή εξουσιοδότησης", attempts=2):
+            return False
+        self.log("  🔓 Εξουσιοδότηση: «Αποστολή»")
+        return True
 
     async def _find_login_form(self) -> Optional[tuple]:
         """Ποια φόρμα σύνδεσης υπάρχει στη σελίδα, αν υπάρχει."""
@@ -1941,16 +2597,51 @@ class MyAADEAutomation(BaseAutomation):
         u_sel, p_sel, s_sel = sels or self.LOGIN_FORMS[0]
         await self.page.fill(u_sel, username)
         await self.page.fill(p_sel, password)
-        try:
-            sub = await self.page.wait_for_selector(s_sel, timeout=5_000)
-            await sub.click()
-        except PwTimeout:
-            # Το κουμπί του oauth2 είναι <button type="button"> και το κλικ
-            # γίνεται με JavaScript· αν δεν βρεθεί, υποβάλλουμε τη φόρμα άμεσα.
+
+        # ΤΟ ΚΟΥΜΠΙ ΤΟ ΒΡΙΣΚΟΥΜΕ ΜΕΣΑ ΣΤΗ ΦΟΡΜΑ ΤΟΥ ΚΩΔΙΚΟΥ, ΟΧΙ ΜΕ CSS ΣΤΗ
+        # ΣΕΛΙΔΑ. Το wait_for_selector με λίστα selectors χωρισμένη με κόμματα
+        # γυρίζει το ΠΡΩΤΟ ΣΤΗ ΣΕΙΡΑ ΤΟΥ DOM, όχι το πρώτο της λίστας: στο
+        # oauth2.gsis.gr το κουμπί αλλαγής γλώσσας («English»/«Ελληνικά») είναι
+        # ΠΑΝΩ από τη φόρμα και ταίριαζε με το button[type='submit']. Το
+        # αποτέλεσμα ήταν ότι η σελίδα άλλαζε απλώς γλώσσα, με τα πεδία
+        # συμπληρωμένα, και έμοιαζε με «λάθος κωδικοί» ενώ δεν είχε γίνει ποτέ
+        # υποβολή. Ψάχνουμε λοιπόν ΜΟΝΟ μέσα στη φόρμα που περιέχει το πεδίο
+        # του κωδικού, και με ΑΚΡΙΒΕΣ κείμενο κουμπιού.
+        picked = await self.page.evaluate(
+            """([pSel, labels]) => {
+                   document.querySelectorAll('[data-gdf-sub]')
+                       .forEach(e => e.removeAttribute('data-gdf-sub'));
+                   const pw = document.querySelector(pSel);
+                   const f = pw && pw.form;
+                   if (!f) return null;
+                   const txt = e => ((e.value || e.innerText ||
+                                      e.textContent || '')
+                                     .replace(/\\s+/g, ' ')).trim();
+                   const c = [...f.querySelectorAll(
+                       "button, input[type=submit], input[type=button], a")];
+                   const hit = c.find(e => e.id === 'btn-login-submit')
+                            || c.find(e => labels.includes(txt(e)))
+                            || c.find(e => e.type === 'submit');
+                   if (!hit) return null;
+                   hit.setAttribute('data-gdf-sub', '1');
+                   return txt(hit) || '(χωρίς κείμενο)';
+               }""",
+            [p_sel, ["Σύνδεση", "Login", "Είσοδος", "Υποβολή"]])
+
+        if picked:
+            await self.page.click("[data-gdf-sub]")
+            self.log(f"  ↳ Πατήθηκε «{picked}» μέσα στη φόρμα κωδικών")
+        else:
             # Το CSRF token είναι hidden input ΜΕΣΑ στη φόρμα, οπότε πάει μαζί.
-            await self.page.evaluate(
-                "() => { const f = document.querySelector('form');"
-                "        if (f) f.submit(); }")
+            submitted = await self.page.evaluate(
+                """(pSel) => { const pw = document.querySelector(pSel);
+                               if (!pw || !pw.form) return false;
+                               pw.form.submit(); return true; }""", p_sel)
+            if submitted:
+                self.log("  ↳ Δεν βρέθηκε κουμπί — υποβολή της φόρμας απευθείας",
+                         "error")
+            else:
+                self.log("  ⚠️ Δεν βρέθηκε καθόλου φόρμα κωδικών", "error")
         try:
             await self.page.wait_for_load_state("networkidle", timeout=30_000)
         except Exception:
@@ -1991,7 +2682,22 @@ class MyAADEAutomation(BaseAutomation):
                        const txt = el => ((el.value || el.innerText ||
                                            el.textContent || '')
                                           .replace(/\\s+/g, ' ')).trim();
+                       // ΤΑ ΟΡΑΤΑ ΠΡΟΗΓΟΥΝΤΑΙ. Τα dialog του PrimeFaces
+                       // υπάρχουν στο DOM ΠΡΙΝ εμφανιστούν, και το innerText
+                       // στοιχείου που δεν εμφανίζεται επιστρέφει κανονικά το
+                       // κείμενό του — οπότε ταίριαζε το «OK» κρυφού dialog και
+                       // το κλικ περίμενε 30'' κάτι που δεν θα γινόταν ποτέ
+                       // ορατό. Κρατάμε και μη ορατό ως έσχατη λύση, για να μη
+                       // χαλάσει η συμπεριφορά όπου δούλευε.
+                       const vis = el => {
+                           const r = el.getBoundingClientRect();
+                           if (r.width <= 0 || r.height <= 0) return false;
+                           const st = getComputedStyle(el);
+                           return st.visibility !== 'hidden' &&
+                                  st.display !== 'none' && st.opacity !== '0';
+                       };
                        let best = null, bestDepth = 1e9;
+                       let anyBest = null, anyDepth = 1e9;
                        for (const el of document.querySelectorAll(css)) {
                            if (norm(txt(el)) !== want) continue;
                            // Πόσα επίπεδα πάνω χρειάζεται για να βρεθεί
@@ -2000,24 +2706,36 @@ class MyAADEAutomation(BaseAutomation):
                            for (let p = el.parentElement; p; p = p.parentElement) {
                                depth++;
                                if (norm(p.innerText || '').includes(near)) {
-                                   if (depth < bestDepth) {
+                                   if (depth < anyDepth) {
+                                       anyDepth = depth; anyBest = el;
+                                   }
+                                   if (vis(el) && depth < bestDepth) {
                                        bestDepth = depth; best = el;
                                    }
                                    break;
                                }
                            }
                        }
-                       if (!best) return null;
+                       // ΑΟΡΑΤΟ ΔΕΝ ΠΑΤΙΕΤΑΙ. Το κλικ σε στοιχείο που δεν
+                       // πρόκειται να εμφανιστεί περιμένει 30'' και μετά σκάει
+                       // με σεντόνι σφάλματος, κρύβοντας την πραγματική αιτία
+                       // (εδώ: ότι το popup δεν βγήκε ποτέ, γιατί η υποβολή
+                       // είχε απορριφθεί). Καλύτερα καθαρό «δεν βρέθηκε».
+                       if (!best) return anyBest
+                           ? {hiddenOnly: true, label: txt(anyBest)} : null;
                        best.setAttribute('data-gdf-near', '1');
                        return {label: txt(best), depth: bestDepth};
                    }""",
                 [self.CELL_CLICKABLE_CSS, target, near],
             )
-            if found:
+            if found and not found.get("hiddenOnly"):
                 self.log(f"  🔘 «{found['label']}» δίπλα στο «{near_text[:40]}»")
                 await self._click_and_follow(
                     self.page.locator('[data-gdf-near="1"]'))
                 return True
+            if found and attempt == attempts:
+                self.log(f"  ⚠️ Το «{found['label']}» υπάρχει αλλά δεν είναι "
+                         f"ορατό — δεν πατιέται", "error")
             if attempt == 1:
                 self.log(f"  ⏳ {what}: αναμονή να φορτώσει η εφαρμογή…")
             await self.page.wait_for_timeout(1_000)
