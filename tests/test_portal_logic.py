@@ -20,7 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from playwright.async_api import async_playwright          # noqa: E402
-from automation.base import gr_norm, label_norm            # noqa: E402
+from automation.base import gr_norm, label_norm, launch_browser   # noqa: E402
 from automation.myaade import MyAADEAutomation             # noqa: E402
 
 FAILURES: list[str] = []
@@ -731,7 +731,9 @@ async def main() -> None:
     test_login_success_check()
     test_merge_pdfs()
     async with async_playwright() as p:
-        browser = await p.chromium.launch()
+        # Ίδιο fallback με την εφαρμογή: αλλιώς τα tests δεν τρέχουν καθόλου σε
+        # μηχάνημα όπου ο πακεταρισμένος Chromium δεν ξεκινά.
+        browser = await launch_browser(p, headless=True, log=print)
         probe = Probe(await browser.new_page())
         await test_periods(probe)
         await test_action_disambiguation(probe)

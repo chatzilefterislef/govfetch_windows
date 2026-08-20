@@ -56,6 +56,60 @@ def label_norm(text: str) -> str:
     return " ".join(gr_norm(text).translate(_LOOKALIKES).split())
 
 
+LAUNCH_ARGS = [
+    "--disable-blink-features=AutomationControlled",
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    # Ο Chromium παγώνει χρονομετρητές σε παράθυρα που δεν φαίνονται· χωρίς
+    # αυτά οι Angular σελίδες θα αργούσαν.
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--disable-background-timer-throttling",
+]
+
+# Πρώτα ο πακεταρισμένος Chromium — είναι ο δοκιμασμένος. Τα υπόλοιπα είναι
+# δίχτυ ασφαλείας, όχι προτίμηση.
+LAUNCH_CHANNELS = [
+    (None,     "πακεταρισμένος Chromium"),
+    ("msedge", "Microsoft Edge του συστήματος"),
+    ("chrome", "Google Chrome του συστήματος"),
+]
+
+
+async def launch_browser(playwright, headless: bool, log=None) -> Browser:
+    """
+    Ξεκινά browser, με fallback στον Edge/Chrome του συστήματος.
+
+    ΓΙΑΤΙ: ο Chromium 129 που καρφώνει το Playwright 1.47 (Σεπτ. 2024) ΔΕΝ
+    ξεκινά σε Windows 11 build 26200 — πετά «spawn UNKNOWN», και το Event Log
+    δείχνει σφάλμα side-by-side στο manifest του chrome.exe. Το κατέβασμα είναι
+    ακέραιο (δοκιμάστηκε `playwright install --force`) και το VC++ runtime
+    εγκατεστημένο· είναι ο ίδιος ο build που δεν τρέχει πια. Χωρίς fallback η
+    εφαρμογή ήταν εντελώς άχρηστη σε τέτοιο μηχάνημα, ενώ ο Edge —που υπάρχει
+    σε ΚΑΘΕ Windows— δουλεύει μια χαρά.
+
+    Ο Edge και ο Chrome είναι κι αυτοί Chromium, οπότε η λογική πλοήγησης δεν
+    αλλάζει σε τίποτα.
+    """
+    errors: List[str] = []
+    for channel, label in LAUNCH_CHANNELS:
+        try:
+            browser = await playwright.chromium.launch(
+                headless=headless, channel=channel, args=LAUNCH_ARGS)
+        except Exception as e:
+            errors.append(f"{label}: {str(e).splitlines()[0]}")
+            continue
+        if channel is not None and log:
+            log(f"  ℹ️ Ο πακεταρισμένος Chromium δεν ξεκίνησε — "
+                f"χρησιμοποιείται ο {label}")
+        return browser
+
+    raise RuntimeError(
+        "Δεν ξεκίνησε κανένας browser.\n   " + "\n   ".join(errors) +
+        "\n   Δοκίμασε να εγκαταστήσεις τον Microsoft Edge ή τον Chrome."
+    )
+
+
 class BaseAutomation:
     def __init__(self, log_callback):
         self.log = log_callback
@@ -82,19 +136,7 @@ class BaseAutomation:
         """
         self._headless = headless
         self._playwright = await async_playwright().start()
-        self.browser = await self._playwright.chromium.launch(
-            headless=headless,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                # Ο Chromium παγώνει χρονομετρητές σε παράθυρα που δεν
-                # φαίνονται· χωρίς αυτά οι Angular σελίδες θα αργούσαν.
-                "--disable-backgrounding-occluded-windows",
-                "--disable-renderer-backgrounding",
-                "--disable-background-timer-throttling",
-            ],
-        )
+        self.browser = await launch_browser(self._playwright, headless, self.log)
         self.context = await self.browser.new_context(
             viewport={"width": 1366, "height": 900},
             accept_downloads=True,
